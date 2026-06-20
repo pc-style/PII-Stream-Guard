@@ -7,10 +7,10 @@ final class BoxStore {
     private var snapshots: [DetectionSnapshot] = []
     private let maxSnapshots = 240
 
-    func update(_ boxes: [PIIBox], frameSize: CGSize, capturedAt: TimeInterval) {
+    func update(_ snapshot: DetectionSnapshot) {
         lock.lock()
         defer { lock.unlock() }
-        snapshots.append(DetectionSnapshot(boxes: boxes, frameSize: frameSize, capturedAt: capturedAt))
+        snapshots.append(snapshot)
         if snapshots.count > maxSnapshots {
             snapshots.removeFirst(snapshots.count - maxSnapshots)
         }
@@ -19,14 +19,13 @@ final class BoxStore {
     func current() -> DetectionSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return snapshots.last ?? DetectionSnapshot(boxes: [], frameSize: .zero, capturedAt: 0)
+        return snapshots.last ?? .empty
     }
 
     func snapshot(atOrBefore capturedAt: TimeInterval) -> DetectionSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return snapshots.last(where: { $0.capturedAt <= capturedAt })
-            ?? DetectionSnapshot(boxes: [], frameSize: .zero, capturedAt: capturedAt)
+        return snapshots.last(where: { $0.capturedAt <= capturedAt }) ?? .empty
     }
 }
 
@@ -35,18 +34,21 @@ final class FrameStore {
     private var samples: [FrameSample] = []
     private let maxSamples = 240
 
-    func update(_ buffer: CVPixelBuffer) {
+    @discardableResult
+    func update(_ buffer: CVPixelBuffer) -> FrameSample {
         lock.lock()
         defer { lock.unlock() }
         let frameSize = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-        samples.append(FrameSample(
+        let sample = FrameSample(
             pixelBuffer: buffer,
             capturedAt: ProcessInfo.processInfo.systemUptime,
             frameSize: frameSize
-        ))
+        )
+        samples.append(sample)
         if samples.count > maxSamples {
             samples.removeFirst(samples.count - maxSamples)
         }
+        return sample
     }
 
     func current() -> (buffer: CVPixelBuffer?, capturedAt: TimeInterval) {

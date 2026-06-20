@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PII Stream Guard — Test Scenarios</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --border: #dfe1e6;
+      --text: #172b4d;
+      --muted: #6b778c;
+      --accent: #0052cc;
+      --accent-soft: #deebff;
+      --danger: #de350b;
+      --success: #00875a;
+      --shadow: 0 1px 3px rgba(9, 30, 66, 0.15);
+      --radius: 8px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.45;
+    }
+
+    .shell {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    header h1 {
+      font-size: 1.35rem;
+      font-weight: 650;
+      margin-bottom: 6px;
+    }
+
+    header p {
+      color: var(--muted);
+      font-size: 0.95rem;
+      max-width: 72ch;
+    }
+
+    .hint {
+      margin-top: 14px;
+      padding: 10px 14px;
+      background: var(--accent-soft);
+      border-radius: 6px;
+      font-size: 0.875rem;
+      color: #0747a6;
+    }
+
+    .hint code {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      background: rgba(255, 255, 255, 0.65);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    nav button {
+      font: inherit;
+      font-size: 0.9rem;
+      padding: 10px 16px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    nav button:hover {
+      border-color: #b3bac5;
+      background: #fafbfc;
+    }
+
+    nav button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .scenario {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      min-height: 560px;
+    }
+
+    .scenario.active { display: block; }
+
+    .scenario-label {
+      padding: 12px 20px;
+      background: #fafbfc;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .pii-tag {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--danger);
+      background: #ffebe6;
+      padding: 2px 7px;
+      border-radius: 4px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    /* --- Flow 1: Email client --- */
+    .mail-app { display: grid; grid-template-columns: 220px 1fr 340px; min-height: 560px; }
+
+    .mail-sidebar {
+      background: #202124;
+      color: #e8eaed;
+      padding: 16px 12px;
+    }
+
+    .mail-sidebar .logo {
+      font-size: 1.1rem;
+      font-weight: 600;
+      padding: 8px 12px 20px;
+    }
+
+    .mail-sidebar ul { list-style: none; }
+    .mail-sidebar li {
+      padding: 10px 12px;
+      border-radius: 0 24px 24px 0;
+      font-size: 0.92rem;
+      color: #c4c7c5;
+    }
+    .mail-sidebar li.active { background: #d3e3fd; color: #041e49; font-weight: 600; }
+
+    .mail-list { border-right: 1px solid var(--border); }
+    .mail-list-toolbar {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+    }
+
+    .mail-row {
+      padding: 14px 16px;
+      border-bottom: 1px solid #f0f1f3;
+      cursor: default;
+    }
+
+    .mail-row.selected { background: #e8f0fe; }
+    .mail-row .from { font-weight: 600; font-size: 0.95rem; margin-bottom: 2px; }
+    .mail-row .subject { font-size: 0.9rem; color: var(--text); }
+    .mail-row .preview { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+    .mail-row .email-addr { font-family: var(--mono); font-size: 0.88rem; color: #1a73e8; }
+
+    .mail-detail { padding: 24px 28px; }
+    .mail-detail h2 { font-size: 1.25rem; margin-bottom: 16px; }
+    .mail-meta { font-size: 0.92rem; margin-bottom: 20px; color: var(--muted); }
+    .mail-meta strong { color: var(--text); }
+    .mail-body { font-size: 1rem; line-height: 1.6; }
+    .mail-body .pii-line {
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: #fff8f6;
+      border-left: 3px solid var(--danger);
+      font-family: var(--mono);
+      font-size: 0.95rem;
+    }
+
+    /* --- Flow 2: CRM ticket --- */
+    .crm { display: grid; grid-template-columns: 260px 1fr; min-height: 560px; }
+    .crm-nav {
+      background: #253858;
+      color: #fff;
+      padding: 20px 16px;
+    }
+    .crm-nav h3 { font-size: 0.85rem; opacity: 0.7; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .crm-nav .ticket-id { font-size: 1.4rem; font-weight: 700; margin-bottom: 24px; }
+    .crm-nav dl { font-size: 0.88rem; }
+    .crm-nav dt { opacity: 0.65; margin-top: 12px; }
+    .crm-nav dd { font-weight: 500; margin-top: 2px; }
+
+    .crm-main { padding: 28px 32px; }
+    .crm-main h2 { font-size: 1.2rem; margin-bottom: 8px; }
+    .crm-status {
+      display: inline-block;
+      background: #fff0b3;
+      color: #974f0c;
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+    }
+    .contact-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      margin-bottom: 24px;
+      background: #fafbfc;
+    }
+    .contact-card h3 { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
+    .contact-grid {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 10px 16px;
+      font-size: 0.98rem;
+    }
+    .contact-grid dt { color: var(--muted); }
+    .contact-grid dd { font-family: var(--mono); font-size: 0.95rem; font-weight: 500; }
+
+    .timeline { border-top: 1px solid var(--border); padding-top: 20px; }
+    .timeline-item { margin-bottom: 18px; }
+    .timeline-item .who { font-weight: 600; font-size: 0.92rem; }
+    .timeline-item .when { font-size: 0.8rem; color: var(--muted); }
+    .timeline-item .msg {
+      margin-top: 6px;
+      font-size: 0.95rem;
+      padding: 12px 14px;
+      background: #f4f5f7;
+      border-radius: 6px;
+    }
+
+    /* --- Flow 3: Team chat --- */
+    .chat-app { display: grid; grid-template-rows: auto 1fr auto; min-height: 560px; }
+    .chat-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .chat-header .hash { color: var(--muted); font-size: 1.1rem; }
+    .chat-header h2 { font-size: 1.05rem; }
+
+    .chat-messages { padding: 20px 24px; overflow-y: auto; }
+    .message { display: flex; gap: 12px; margin-bottom: 20px; }
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.85rem;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .message-body .author { font-weight: 700; font-size: 0.92rem; }
+    .message-body .time { font-size: 0.78rem; color: var(--muted); margin-left: 8px; font-weight: 400; }
+    .message-body .text { margin-top: 4px; font-size: 0.98rem; }
+    .message-body .text .mention { background: #e8f5fa; color: #1264a3; padding: 0 4px; border-radius: 3px; }
+    .message-body .text .email-inline { font-family: var(--mono); color: #1a73e8; }
+
+    .chat-compose {
+      border-top: 1px solid var(--border);
+      padding: 16px 20px;
+      display: flex;
+      gap: 10px;
+    }
+    .chat-compose input {
+      flex: 1;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font: inherit;
+      font-size: 0.95rem;
+    }
+
+    /* --- Flow 4: Checkout --- */
+    .checkout { display: grid; grid-template-columns: 1fr 360px; min-height: 560px; }
+    .checkout-form { padding: 32px 36px; }
+    .checkout-form h2 { font-size: 1.3rem; margin-bottom: 24px; }
+    .field { margin-bottom: 18px; }
+    .field label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .field .value {
+      font-size: 1.05rem;
+      padding: 11px 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fafbfc;
+      font-family: var(--mono);
+    }
+    .checkout-summary {
+      background: #172b4d;
+      color: #fff;
+      padding: 32px 28px;
+    }
+    .checkout-summary h3 { font-size: 1rem; opacity: 0.8; margin-bottom: 20px; }
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.95rem;
+      margin-bottom: 12px;
+      opacity: 0.9;
+    }
+    .summary-total {
+      border-top: 1px solid rgba(255,255,255,0.2);
+      margin-top: 16px;
+      padding-top: 16px;
+      font-size: 1.2rem;
+      font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+    }
+    .receipt-note {
+      margin-top: 28px;
+      padding: 14px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 6px;
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+    .receipt-note .pii { font-family: var(--mono); color: #79f2c0; }
+
+    /* --- Flow 5: Video call / meeting notes --- */
+    .meeting { display: grid; grid-template-columns: 1fr 320px; min-height: 560px; }
+    .video-area {
+      background: #1a1a2e;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 12px;
+    }
+    .participant {
+      background: #2d2d44;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      position: relative;
+    }
+    .participant .initials {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: #5e6ad2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .participant .name { font-size: 0.95rem; font-weight: 600; }
+    .participant .sub {
+      font-size: 0.82rem;
+      color: #a0a0b8;
+      margin-top: 4px;
+      font-family: var(--mono);
+    }
+    .participant.host .initials { background: #00875a; }
+
+    .notes-panel {
+      border-left: 1px solid var(--border);
+      padding: 20px;
+      background: #fffef8;
+    }
+    .notes-panel h3 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+    .notes-panel textarea {
+      width: 100%;
+      height: 200px;
+      border: 1px solid #e8e0c8;
+      border-radius: 6px;
+      padding: 12px;
+      font: inherit;
+      font-size: 0.92rem;
+      line-height: 1.55;
+      resize: none;
+      background: #fff;
+    }
+    .attendee-list {
+      margin-top: 20px;
+      font-size: 0.88rem;
+    }
+    .attendee-list li {
+      list-style: none;
+      padding: 8px 0;
+      border-bottom: 1px solid #f0ebe0;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .attendee-list .contact { font-family: var(--mono); font-size: 0.82rem; color: #1a73e8; }
+
+    kbd {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #fafbfc;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>PII Stream Guard — Live Capture Test Scenarios</h1>
+      <p>
+        Open this page full-screen in a browser, run
+        <code>swift run pii-stream watch</code>, and step through each scenario.
+        Emails are detected automatically; pass phone numbers as needles, e.g.
+        <code>--needle "555-0192"</code>.
+      </p>
+      <div class="hint">
+        Switch scenarios with the tabs below or keyboard shortcuts
+        <kbd>1</kbd>–<kbd>5</kbd>. Use realistic window sizing (~1100px wide) so OCR text height stays above the detector threshold.
+      </div>
+    </header>
+
+    <nav aria-label="Test scenarios">
+      <button type="button" class="active" data-scenario="mail">1 · Email inbox</button>
+      <button type="button" data-scenario="crm">2 · Support ticket</button>
+      <button type="button" data-scenario="chat">3 · Team chat</button>
+      <button type="button" data-scenario="checkout">4 · Order checkout</button>
+      <button type="button" data-scenario="meeting">5 · Video call notes</button>
+    </nav>
+
+    <!-- Scenario 1: Email client -->
+    <section id="mail" class="scenario active" aria-label="Email inbox scenario">
+      <div class="scenario-label">Flow 1 · Corporate email client <span class="pii-tag">3 emails</span></div>
+      <div class="mail-app">
+        <aside class="mail-sidebar">
+          <div class="logo">✉ Inbox</div>
+          <ul>
+            <li class="active">Inbox (4)</li>
+            <li>Starred</li>
+            <li>Sent</li>
+            <li>Drafts</li>
+          </ul>
+        </aside>
+        <div class="mail-list">
+          <div class="mail-list-toolbar">Primary</div>
+          <div class="mail-row selected">
+            <div class="from">Marcus Webb</div>
+            <div class="email-addr">marcus.webb@northwind-logistics.com</div>
+            <div class="subject">Re: Q2 shipment delay — action needed</div>
+            <div class="preview">Can you loop in billing at the address below…</div>
+          </div>
+          <div class="mail-row">
+            <div class="from">Stripe</div>
+            <div class="email-addr">receipts@stripe.com</div>
+            <div class="subject">Your receipt from Acme SaaS</div>
+          </div>
+          <div class="mail-row">
+            <div class="from">HR Portal</div>
+            <div class="email-addr">no-reply@peopleops.internal</div>
+            <div class="subject">Benefits enrollment closes Friday</div>
+          </div>
+        </div>
+        <article class="mail-detail">
+          <h2>Re: Q2 shipment delay — action needed</h2>
+          <div class="mail-meta">
+            From <strong>Marcus Webb</strong> &lt;<span style="font-family:var(--mono);color:#1a73e8">marcus.webb@northwind-logistics.com</span>&gt;<br>
+            To <strong>You</strong>, <strong>Billing</strong><br>
+            Today, 9:14 AM
+          </div>
+          <div class="mail-body">
+            <p>Hi team — customs is holding pallet #4471. They need a direct contact for the importer of record before they'll release it.</p>
+            <p>Please ask our broker to CC:</p>
+            <div class="pii-line">billing-escalations@northwind-logistics.com</div>
+            <p style="margin-top:16px">If that doesn't work, Marcus gave me his mobile for urgent calls: <strong style="font-family:var(--mono)">+1 (312) 555-0147</strong>.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Scenario 2: CRM -->
+    <section id="crm" class="scenario" aria-label="Support ticket scenario">
+      <div class="scenario-label">Flow 2 · Customer support CRM <span class="pii-tag">email + phone</span></div>
+      <div class="crm">
+        <aside class="crm-nav">
+          <h3>Ticket</h3>
+          <div class="ticket-id">#88421</div>
+          <dl>
+            <dt>Priority</dt><dd>High</dd>
+            <dt>Assignee</dt><dd>Jordan Lee</dd>
+            <dt>Channel</dt><dd>Live chat</dd>
+            <dt>Created</dt><dd>Jun 20, 2026 · 2:03 PM</dd>
+          </dl>
+        </aside>
+        <main class="crm-main">
+          <h2>Cannot reset password — account locked</h2>
+          <span class="crm-status">Awaiting customer reply</span>
+
+          <div class="contact-card">
+            <h3>Customer profile</h3>
+            <dl class="contact-grid">
+              <dt>Name</dt><dd>Elena Vasquez</dd>
+              <dt>Account email</dt><dd>elena.vasquez@brightpath-health.org</dd>
+              <dt>Backup email</dt><dd>elena.v.personal@gmail.com</dd>
+              <dt>Phone</dt><dd>+1 646-555-0188</dd>
+              <dt>Member ID</dt><dd>BP-9920441</dd>
+            </dl>
+          </div>
+
+          <div class="timeline">
+            <div class="timeline-item">
+              <div class="who">Elena Vasquez <span class="when">2:03 PM</span></div>
+              <div class="msg">I've tried twice and never get the reset link. My work email is elena.vasquez@brightpathhealth.org — can you send it there instead?</div>
+            </div>
+            <div class="timeline-item">
+              <div class="who">Jordan Lee <span class="when">2:11 PM</span></div>
+              <div class="msg">Sent manual reset to elena.vasquez@brightpath-health.org. If still blocked, call her at 646-555-0188 to verify.</div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </section>
+
+    <!-- Scenario 3: Chat -->
+    <section id="chat" class="scenario" aria-label="Team chat scenario">
+      <div class="scenario-label">Flow 3 · Engineering Slack channel <span class="pii-tag">2 emails</span></div>
+      <div class="chat-app">
+        <div class="chat-header">
+          <span class="hash">#</span>
+          <h2>incident-response</h2>
+        </div>
+        <div class="chat-messages">
+          <div class="message">
+            <div class="avatar" style="background:#e01e5a">AL</div>
+            <div class="message-body">
+              <div><span class="author">Aisha Langford</span><span class="time">10:02 AM</span></div>
+              <div class="text">Vendor says the API key was emailed to the wrong person. They're asking us to confirm the correct recipient.</div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar" style="background:#2eb67d">DK</div>
+            <div class="message-body">
+              <div><span class="author">Dev Kumar</span><span class="time">10:04 AM</span></div>
+              <div class="text">Should be <span class="email-inline">platform-ops@contoso.io</span> — not the personal one.</div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar" style="background:#ecb22e;color:#1d1c1d">RM</div>
+            <div class="message-body">
+              <div><span class="author">Riley Morgan</span><span class="time">10:06 AM</span></div>
+              <div class="text"><span class="mention">@Aisha</span> Forward the thread to <span class="email-inline">security-alerts@contoso.io</span> and cc vendor contact <span class="email-inline">tom.hartley@external-audit.co.uk</span>.</div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar" style="background:#4a154b">AL</div>
+            <div class="message-body">
+              <div><span class="author">Aisha Langford</span><span class="time">10:08 AM</span></div>
+              <div class="text">On it. Vendor callback number if needed: <strong style="font-family:var(--mono)">+44 20 7946 0958</strong>.</div>
+            </div>
+          </div>
+        </div>
+        <div class="chat-compose">
+          <input type="text" placeholder="Message #incident-response" aria-label="Compose message">
+        </div>
+      </div>
+    </section>
+
+    <!-- Scenario 4: Checkout -->
+    <section id="checkout" class="scenario" aria-label="Checkout scenario">
+      <div class="scenario-label">Flow 4 · E-commerce checkout <span class="pii-tag">email + phone</span></div>
+      <div class="checkout">
+        <div class="checkout-form">
+          <h2>Shipping &amp; contact</h2>
+          <div class="field">
+            <label>Full name</label>
+            <div class="value">Priya Nair</div>
+          </div>
+          <div class="field">
+            <label>Email for order updates</label>
+            <div class="value">priya.nair@homelab.dev</div>
+          </div>
+          <div class="field">
+            <label>Mobile number</label>
+            <div class="value">(510) 555-0173</div>
+          </div>
+          <div class="field">
+            <label>Street address</label>
+            <div class="value" style="font-family:var(--font)">1842 Shattuck Ave, Berkeley, CA 94704</div>
+          </div>
+          <div class="field">
+            <label>Delivery instructions</label>
+            <div class="value" style="font-family:var(--font)">Gate code 4821 — text before arrival</div>
+          </div>
+        </div>
+        <aside class="checkout-summary">
+          <h3>Order summary</h3>
+          <div class="summary-row"><span>Mechanical keyboard</span><span>$189.00</span></div>
+          <div class="summary-row"><span>Shipping</span><span>$12.00</span></div>
+          <div class="summary-row"><span>Tax</span><span>$16.08</span></div>
+          <div class="summary-total"><span>Total</span><span>$217.08</span></div>
+          <div class="receipt-note">
+            Confirmation will be sent to
+            <span class="pii">priya.nair@homelab.dev</span>.
+            SMS updates go to <span class="pii">510-555-0173</span>.
+            Questions? support@storefront.example
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Scenario 5: Video call -->
+    <section id="meeting" class="scenario" aria-label="Video call scenario">
+      <div class="scenario-label">Flow 5 · Zoom-style call with shared notes <span class="pii-tag">4 emails + phones</span></div>
+      <div class="meeting">
+        <div class="video-area">
+          <div class="participant host">
+            <div class="initials">SC</div>
+            <div class="name">Sarah Chen (Host)</div>
+            <div class="sub">sarah.chen@acmecorp.com</div>
+          </div>
+          <div class="participant">
+            <div class="initials">JO</div>
+            <div class="name">James Okafor</div>
+            <div class="sub">j.okafor@partner.co</div>
+          </div>
+          <div class="participant">
+            <div class="initials">ML</div>
+            <div class="name">Maria Lopez</div>
+            <div class="sub">maria.lopez@acmecorp.com</div>
+          </div>
+          <div class="participant">
+            <div class="initials">?</div>
+            <div class="name">Dial-in guest</div>
+            <div class="sub">+1 415 555 0192</div>
+          </div>
+        </div>
+        <aside class="notes-panel">
+          <h3>Meeting notes — Account review</h3>
+          <textarea readonly aria-label="Meeting notes">Action items:
+• Send SOW to sarah.chen@acmecorp.com by EOD
+• Legal review: contracts@acmecorp.com
+• James to share audit log export
+• Escalation: call Maria at (628) 555-0134 if blocked
+
+Dial-in backup: +1 415 555 0192</textarea>
+          <ul class="attendee-list">
+            <li><span>Sarah Chen</span><span class="contact">sarah.chen@acmecorp.com</span></li>
+            <li><span>James Okafor</span><span class="contact">j.okafor@partner.co</span></li>
+            <li><span>Maria Lopez</span><span class="contact">maria.lopez@acmecorp.com · 628-555-0134</span></li>
+            <li><span>Guest line</span><span class="contact">415-555-0192</span></li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const buttons = document.querySelectorAll('nav button');
+    const scenarios = document.querySelectorAll('.scenario');
+    const order = ['mail', 'crm', 'chat', 'checkout', 'meeting'];
+
+    function show(id) {
+      scenarios.forEach(s => s.classList.toggle('active', s.id === id));
+      buttons.forEach(b => b.classList.toggle('active', b.dataset.scenario === id));
+      history.replaceState(null, '', '#' + id);
+    }
+
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => show(btn.dataset.scenario));
+    });
+
+    document.addEventListener('keydown', (e) => {
+      const n = parseInt(e.key, 10);
+      if (n >= 1 && n <= 5) show(order[n - 1]);
+    });
+
+    const hash = location.hash.replace('#', '');
+    if (order.includes(hash)) show(hash);
+  </script>
+</body>
+</html>

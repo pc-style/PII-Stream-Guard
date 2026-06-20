@@ -2,12 +2,14 @@ import CoreGraphics
 import Foundation
 
 enum GuardMode: String, CaseIterable {
+    case paranoid
     case safe
     case balanced
     case fast
 
     var title: String {
         switch self {
+        case .paranoid: return "Paranoid"
         case .safe: return "Safe"
         case .balanced: return "Balanced"
         case .fast: return "Fast but faulty"
@@ -16,6 +18,7 @@ enum GuardMode: String, CaseIterable {
 
     var renderDelay: TimeInterval {
         switch self {
+        case .paranoid: return 3.00
         case .safe: return 2.50
         case .balanced: return 0.75
         case .fast: return 0
@@ -24,6 +27,13 @@ enum GuardMode: String, CaseIterable {
 
     var detectorSettings: DetectorSettings {
         switch self {
+        case .paranoid:
+            return DetectorSettings(
+                accurate: false,
+                maxPixelSize: 1920,
+                minimumTextHeight: 0.006,
+                enhanceLowContrast: true
+            )
         case .safe:
             return DetectorSettings(
                 accurate: true,
@@ -50,10 +60,15 @@ enum GuardMode: String, CaseIterable {
 
     var detectionFPS: Double {
         switch self {
+        case .paranoid: return 0
         case .safe: return 5
-        case .balanced: return 8
+        case .balanced: return 0
         case .fast: return 12
         }
+    }
+
+    var detectsEveryFrame: Bool {
+        detectionFPS <= 0
     }
 }
 
@@ -66,6 +81,7 @@ struct GuardStateSnapshot {
     let boxes: [PIIBox]
     let active: Bool
     let mode: GuardMode
+    let blackoutWholeFrame: Bool
 }
 
 final class GuardStateMachine {
@@ -92,6 +108,8 @@ final class GuardStateMachine {
 
     func ingest(detected boxes: [PIIBox]) -> GuardStateSnapshot {
         switch mode {
+        case .paranoid:
+            return ingestParanoid(boxes)
         case .safe:
             return ingestSafe(boxes)
         case .balanced:
@@ -99,6 +117,20 @@ final class GuardStateMachine {
         case .fast:
             return ingestFast(boxes)
         }
+    }
+
+    private func ingestParanoid(_ boxes: [PIIBox]) -> GuardStateSnapshot {
+        if boxes.isEmpty {
+            misses += 1
+            if misses >= 25 {
+                disarm()
+            }
+        } else {
+            isArmed = true
+            misses = 0
+            armedBoxes = boxes
+        }
+        return snapshot()
     }
 
     private func ingestSafe(_ boxes: [PIIBox]) -> GuardStateSnapshot {
@@ -164,7 +196,12 @@ final class GuardStateMachine {
     }
 
     private func snapshot() -> GuardStateSnapshot {
-        GuardStateSnapshot(boxes: isArmed ? armedBoxes : [], active: isArmed, mode: mode)
+        GuardStateSnapshot(
+            boxes: isArmed ? armedBoxes : [],
+            active: isArmed,
+            mode: mode,
+            blackoutWholeFrame: isArmed && mode == .paranoid
+        )
     }
 
     private func boxesAreSimilar(_ lhs: [PIIBox], _ rhs: [PIIBox]) -> Bool {

@@ -19,6 +19,18 @@ struct DetectionSnapshot {
     let boxes: [PIIBox]
     let frameSize: CGSize
     let capturedAt: TimeInterval
+    let guardMode: GuardMode
+    let armed: Bool
+    let blackoutWholeFrame: Bool
+
+    static let empty = DetectionSnapshot(
+        boxes: [],
+        frameSize: .zero,
+        capturedAt: 0,
+        guardMode: .balanced,
+        armed: false,
+        blackoutWholeFrame: false
+    )
 }
 
 struct FrameSample {
