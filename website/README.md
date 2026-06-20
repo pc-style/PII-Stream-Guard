@@ -1,43 +1,45 @@
-# Astro Starter Kit: Minimal
+# pii-stream website
 
-```sh
-bun create astro@latest -- --template minimal
-```
+Marketing/landing site for **PII Stream Guard**, a live privacy preview for
+screen sharing on macOS. Built as a single-page Astro static site, styled with a
+dark "security-lab" theme (vermillion accent, monospace type, film-grain +
+vignette atmosphere) and deployed on Vercel.
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro project, you'll see the following folders and files:
+## Structure
 
 ```text
-/
+website/
 ├── public/
+│   ├── og.png              # generated Open Graph card (1200x630)
+│   ├── favicon.svg
+│   └── favicon.ico
+├── scripts/
+│   ├── og-card.html        # source for the OG card
+│   └── build-og.sh         # regenerates public/og.png
 ├── src/
-│   └── pages/
-│       └── index.astro
+│   ├── layouts/Layout.astro  # head meta, global styles, nav + footer
+│   └── pages/index.astro     # the page (content, guard demo, scripts)
 └── package.json
 ```
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+## Commands
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+| Command         | Action                                       |
+| :-------------- | :------------------------------------------- |
+| `bun install`   | Install dependencies                         |
+| `bun dev`       | Local dev server at `localhost:4321`         |
+| `bun run build` | Build the static site to `./dist/`           |
+| `bun run preview` | Preview the production build               |
+| `bun run astro check` | Type-check the Astro files             |
 
-Any static assets, like images, can be placed in the `public/` directory.
+## Regenerating the Open Graph image
 
-## 🧞 Commands
+`public/og.png` is rendered from [`scripts/og-card.html`](scripts/og-card.html)
+using local macOS tools (WeasyPrint for HTML→PDF, `pdftoppm` for PDF→PNG, and
+`sips` to force the exact 1200×630 size):
 
-All commands are run from the root of the project, from a terminal:
+```sh
+bash scripts/build-og.sh
+```
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `bun install`             | Installs dependencies                            |
-| `bun dev`             | Starts local dev server at `localhost:4321`      |
-| `bun build`           | Build your production site to `./dist/`          |
-| `bun preview`         | Preview your build locally, before deploying     |
-| `bun astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `bun astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+Edit `scripts/og-card.html` and re-run the script to update the card.
