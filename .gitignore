@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+.swiftpm/
+.aden/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserdata/
+*.swp
+*.log
+benchmark-results/
