@@ -323,9 +323,7 @@ final class PreviewWindowController: NSWindowController {
 
     private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
         switch mode {
-        case .expLow, .expHigh:
-            return true
-        case .paranoid, .safe, .balanced, .fast:
+        case .lockdown, .standard, .lowLatency:
             return true
         }
     }
@@ -341,6 +339,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     private let detectionQueue = DispatchQueue(label: "pii-stream.detection")
     private var detector: VisionPIIDetector
     private var guardState: GuardStateMachine
+    private var boxStabilizer = BoxStabilizer()
     private var guardMode: GuardMode
     private var lastDetectionTime: TimeInterval = 0
     private var lastLoggedSignature: String = ""
@@ -427,27 +426,33 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func detect(sample: FrameSample) {
         guard sample.id > newestAcceptedFrameID else { return }
-        let boxes = detector.detect(in: sample.pixelBuffer)
+        let detectedBoxes = detector.detect(in: sample.pixelBuffer)
         guard sample.id > newestAcceptedFrameID else { return }
         newestAcceptedFrameID = sample.id
-        let guardSnapshot = guardState.ingest(detected: boxes)
+        let guardSnapshot = guardState.ingest(detected: detectedBoxes)
+        let displayBoxes: [PIIBox]
+        if guardSnapshot.active {
+            displayBoxes = boxStabilizer.stabilize(guardSnapshot.boxes)
+        } else {
+            boxStabilizer.reset()
+            displayBoxes = []
+        }
+
         boxStore.update(DetectionSnapshot(
             frameID: sample.id,
-            boxes: guardSnapshot.boxes,
+            boxes: displayBoxes,
             frameSize: sample.frameSize,
             capturedAt: sample.capturedAt,
             guardMode: guardSnapshot.mode,
             armed: guardSnapshot.active,
             blackoutWholeFrame: guardSnapshot.blackoutWholeFrame
         ))
-        logDetections(boxes, frameID: sample.id, guardSnapshot: guardSnapshot)
+        logDetections(detectedBoxes, frameID: sample.id, guardSnapshot: guardSnapshot)
     }
 
     private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
         switch mode {
-        case .expLow, .expHigh:
-            return true
-        case .paranoid, .safe, .balanced, .fast:
+        case .lockdown, .standard, .lowLatency:
             return true
         }
     }
@@ -457,6 +462,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.guardMode = mode
             self.guardState.setMode(mode)
+            self.boxStabilizer.reset()
             self.detector = AppCoordinator.makeDetector(options: self.options, mode: mode)
             self.lastDetectionTime = 0
             self.newestAcceptedFrameID = 0
@@ -472,6 +478,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         return VisionPIIDetector(
             needles: options.needles,
             checkEmail: options.checkEmail,
+            checkPhone: options.checkPhone,
             accurate: settings.accurate,
             maxPixelSize: settings.maxPixelSize,
             minimumTextHeight: settings.minimumTextHeight,
@@ -526,8 +533,9 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
 struct WatchOptions {
     var needles: [String] = []
     var checkEmail: Bool = true
+    var checkPhone: Bool = true
     var fps: Double?
-    var mode: GuardMode = .balanced
+    var mode: GuardMode = .standard
     var settingsOverride: DetectorSettings?
 }
 
@@ -562,6 +570,8 @@ enum CLI {
                 options.needles.append(args[i])
             case "--no-email":
                 options.checkEmail = false
+            case "--no-phone":
+                options.checkPhone = false
             case "--fps":
                 i += 1
                 guard i < args.count, let fps = Double(args[i]), fps > 0 else {
@@ -609,7 +619,6 @@ enum CLI {
 
     private static func parseBenchmarkOptions(_ args: [String]) throws -> BenchmarkOptions {
         var options = BenchmarkOptions()
-        var customSettings: [DetectorSettings] = []
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -619,24 +628,14 @@ enum CLI {
                 options.needles.append(args[i])
             case "--no-email":
                 options.checkEmail = false
-            case "--fps":
-                i += 1
-                guard i < args.count, let fps = Double(args[i]), fps > 0 else {
-                    throw CLIError.invalidValue("--fps")
-                }
-                options.fps = fps
+            case "--no-phone":
+                options.checkPhone = false
             case "--duration":
                 i += 1
                 guard i < args.count, let duration = Double(args[i]), duration > 0 else {
                     throw CLIError.invalidValue("--duration")
                 }
                 options.duration = duration
-            case "--config":
-                i += 1
-                guard i < args.count, let settings = parseDetectorSettings(args[i]) else {
-                    throw CLIError.invalidValue("--config")
-                }
-                customSettings.append(settings)
             case "--output":
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--output") }
@@ -649,9 +648,6 @@ enum CLI {
                 throw CLIError.unknownFlag(args[i])
             }
             i += 1
-        }
-        if !customSettings.isEmpty {
-            options.settings = customSettings
         }
         return options
     }
@@ -693,18 +689,12 @@ enum CLI {
 
     private static func parseGuardMode(_ value: String) -> GuardMode? {
         switch value.lowercased() {
-        case "paranoid":
-            return .paranoid
-        case "safe":
-            return .safe
-        case "balanced":
-            return .balanced
-        case "fast", "fast-but-faulty", "fast_but_faulty":
-            return .fast
-        case "exp-low", "exp_low", "explow":
-            return .expLow
-        case "exp-high", "exp_high", "exphigh":
-            return .expHigh
+        case "lockdown":
+            return .lockdown
+        case "standard":
+            return .standard
+        case "low-latency", "low_latency", "lowlatency":
+            return .lowLatency
         default:
             return nil
         }
@@ -720,7 +710,8 @@ enum CLI {
     Watch options:
       --needle TEXT   Additional PII needle to match (repeatable)
       --no-email      Disable email regex detection
-      --mode MODE     paranoid, safe, balanced, fast, exp-low, or exp-high (default: balanced)
+      --no-phone      Disable phone number detection
+      --mode MODE     lockdown, standard, or low-latency (default: standard)
       --fps N         Override mode detection rate
       --accurate      Use accurate Vision OCR (slower)
       --min-text-height N
@@ -730,13 +721,17 @@ enum CLI {
       --enhance-low-contrast
                      Boost contrast/sharpness before OCR
 
+    Benchmark:
+      Captures live frames once, then measures detection latency across a
+      fixed matrix: 720p (1280x720) and 1080p (1920x1080), each reported
+      against 10, 30, and 60 fps budgets. Each row lists min, p95, average
+      frame time, required render delay, budget slack, and budget fit.
+
     Benchmark options:
       --needle TEXT   Additional PII needle to match (repeatable)
       --no-email      Disable email regex detection
-      --fps N         Screen sample rate (default: 8)
+      --no-phone      Disable phone number detection
       --duration N    Capture duration in seconds (default: 5)
-      --config SPEC   Detector config, repeatable. Example:
-                     accurate=false,maxPixelSize=1920,minimumTextHeight=0.006,enhanceLowContrast=true
       --output PATH   Write JSON summary to PATH instead of stdout
       --csv PATH      Write CSV summary to PATH
 

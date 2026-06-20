@@ -1,0 +1,4 @@
+accurate,maxPixelSize,minimumTextHeight,enhanceLowContrast,frames,latencyP50MS,latencyP95MS,latencyAverageMS,hitCount,matchedKinds
+false,1440,0.012,false,8,45.077,78.297,49.120,0,
+false,1920,0.006,true,8,41.534,49.684,42.526,24,email
+true,2560,0.004,true,8,218.599,301.463,228.014,24,email

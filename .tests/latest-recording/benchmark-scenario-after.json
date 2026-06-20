@@ -1,0 +1,50 @@
+{
+  "capturedFrames" : 50,
+  "duration" : 3,
+  "fps" : 8,
+  "results" : [
+    {
+      "accurate" : false,
+      "enhanceLowContrast" : false,
+      "frames" : 8,
+      "hitCount" : 0,
+      "latencyAverageMS" : 49.1199165,
+      "latencyP50MS" : 45.077333,
+      "latencyP95MS" : 78.296875,
+      "matchedKinds" : [
+
+      ],
+      "maxPixelSize" : 1440,
+      "minimumTextHeight" : 0.012
+    },
+    {
+      "accurate" : false,
+      "enhanceLowContrast" : true,
+      "frames" : 8,
+      "hitCount" : 24,
+      "latencyAverageMS" : 42.525922,
+      "latencyP50MS" : 41.534375,
+      "latencyP95MS" : 49.683667,
+      "matchedKinds" : [
+        "email"
+      ],
+      "maxPixelSize" : 1920,
+      "minimumTextHeight" : 0.006
+    },
+    {
+      "accurate" : true,
+      "enhanceLowContrast" : true,
+      "frames" : 8,
+      "hitCount" : 24,
+      "latencyAverageMS" : 228.01432275,
+      "latencyP50MS" : 218.599458,
+      "latencyP95MS" : 301.463167,
+      "matchedKinds" : [
+        "email"
+      ],
+      "maxPixelSize" : 2560,
+      "minimumTextHeight" : 0.004
+    }
+  ],
+  "sampledFrames" : 8
+}

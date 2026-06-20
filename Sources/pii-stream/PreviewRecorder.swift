@@ -246,7 +246,7 @@ final class PreviewRecorder {
 
     private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
         switch mode {
-        case .expLow, .expHigh, .paranoid, .safe, .balanced, .fast:
+        case .lockdown, .standard, .lowLatency:
             return true
         }
     }

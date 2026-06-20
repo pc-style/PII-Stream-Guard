@@ -79,24 +79,27 @@ final class BoxStore {
 final class FrameStore {
     private let lock = NSLock()
     private var samples: [FrameSample] = []
-    private let maxSamples = 240
+    private let maxSampleAge: TimeInterval = 2.0
     private var nextFrameID: UInt64 = 1
 
     @discardableResult
     func update(_ buffer: CVPixelBuffer) -> FrameSample {
         lock.lock()
         defer { lock.unlock() }
+        let capturedAt = ProcessInfo.processInfo.systemUptime
         let frameSize = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
         let sample = FrameSample(
             id: nextFrameID,
             pixelBuffer: buffer,
-            capturedAt: ProcessInfo.processInfo.systemUptime,
+            capturedAt: capturedAt,
             frameSize: frameSize
         )
         nextFrameID &+= 1
         samples.append(sample)
-        if samples.count > maxSamples {
-            samples.removeFirst(samples.count - maxSamples)
+        let cutoff = capturedAt - maxSampleAge
+        let expiredCount = samples.prefix { $0.capturedAt < cutoff }.count
+        if expiredCount > 0 {
+            samples.removeFirst(expiredCount)
         }
         return sample
     }

@@ -33,6 +33,7 @@ struct NormalizedText {
 struct VisionPIIDetector: PIIDetector {
     let needles: [String]
     let checkEmail: Bool
+    let checkPhone: Bool
     let accurate: Bool
     let maxPixelSize: CGFloat
     let minimumTextHeight: Float
@@ -43,11 +44,17 @@ struct VisionPIIDetector: PIIDetector {
         options: [.caseInsensitive]
     )
 
+    private let phoneRegex = try! NSRegularExpression(
+        pattern: "(?<![A-Z0-9])(?:\\+\\s*\\d{1,3}[\\s.-]*)?(?:\\(\\s*\\d{3}\\s*\\)|\\d{3})[\\s.-]*\\d{3}[\\s.-]*\\d{4}(?![A-Z0-9])",
+        options: [.caseInsensitive]
+    )
+
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     init(
         needles: [String],
         checkEmail: Bool = true,
+        checkPhone: Bool = true,
         accurate: Bool = false,
         maxPixelSize: CGFloat = 1440,
         minimumTextHeight: Float = 0.012,
@@ -55,6 +62,7 @@ struct VisionPIIDetector: PIIDetector {
     ) {
         self.needles = needles
         self.checkEmail = checkEmail
+        self.checkPhone = checkPhone
         self.accurate = accurate
         self.maxPixelSize = maxPixelSize
         self.minimumTextHeight = minimumTextHeight
@@ -80,45 +88,57 @@ struct VisionPIIDetector: PIIDetector {
         var boxes: [PIIBox] = []
 
         for observation in request.results ?? [] {
-            guard let candidate = observation.topCandidates(1).first else { continue }
-            let raw = candidate.string
-            let confidence = candidate.confidence
+            for candidate in observation.topCandidates(3) {
+                let raw = candidate.string
+                let confidence = candidate.confidence
 
-            if checkEmail {
-                collectEmailBoxes(
-                    from: raw,
-                    candidate: candidate,
-                    observation: observation,
-                    confidence: confidence,
-                    detectedAt: now,
-                    into: &boxes
-                )
-            }
+                if checkEmail {
+                    collectEmailBoxes(
+                        from: raw,
+                        candidate: candidate,
+                        observation: observation,
+                        confidence: confidence,
+                        detectedAt: now,
+                        into: &boxes
+                    )
+                }
 
-            let normText = NormalizedText.build(from: raw)
-            for (idx, needle) in normalizedNeedles.enumerated() where !needle.isEmpty {
-                var searchStart = normText.normalized.startIndex
-                while searchStart < normText.normalized.endIndex,
-                      let range = normText.normalized.range(of: needle, range: searchStart..<normText.normalized.endIndex) {
-                    if let originalRange = normText.originalRange(for: range, in: raw) {
-                        appendBox(
-                            kind: .needle,
-                            matched: needles[idx],
-                            confidence: confidence,
-                            detectedAt: now,
-                            raw: raw,
-                            originalRange: originalRange,
-                            candidate: candidate,
-                            observation: observation,
-                            into: &boxes
-                        )
+                if checkPhone {
+                    collectPhoneBoxes(
+                        from: raw,
+                        candidate: candidate,
+                        observation: observation,
+                        confidence: confidence,
+                        detectedAt: now,
+                        into: &boxes
+                    )
+                }
+
+                let normText = NormalizedText.build(from: raw)
+                for (idx, needle) in normalizedNeedles.enumerated() where !needle.isEmpty {
+                    var searchStart = normText.normalized.startIndex
+                    while searchStart < normText.normalized.endIndex,
+                          let range = normText.normalized.range(of: needle, range: searchStart..<normText.normalized.endIndex) {
+                        if let originalRange = normText.originalRange(for: range, in: raw) {
+                            appendBox(
+                                kind: .needle,
+                                matched: needles[idx],
+                                confidence: confidence,
+                                detectedAt: now,
+                                raw: raw,
+                                originalRange: originalRange,
+                                candidate: candidate,
+                                observation: observation,
+                                into: &boxes
+                            )
+                        }
+                        searchStart = range.upperBound
                     }
-                    searchStart = range.upperBound
                 }
             }
         }
 
-        return boxes
+        return deduplicated(boxes)
     }
 
     private func collectEmailBoxes(
@@ -135,6 +155,34 @@ struct VisionPIIDetector: PIIDetector {
             let matched = String(raw[range]).filter { !$0.isWhitespace }
             appendBox(
                 kind: .email,
+                matched: matched,
+                confidence: confidence,
+                detectedAt: detectedAt,
+                raw: raw,
+                originalRange: range,
+                candidate: candidate,
+                observation: observation,
+                into: &boxes
+            )
+        }
+    }
+
+    private func collectPhoneBoxes(
+        from raw: String,
+        candidate: VNRecognizedText,
+        observation: VNRecognizedTextObservation,
+        confidence: Float,
+        detectedAt: TimeInterval,
+        into boxes: inout [PIIBox]
+    ) {
+        let nsRange = NSRange(raw.startIndex..., in: raw)
+        for match in phoneRegex.matches(in: raw, range: nsRange) {
+            guard let range = Range(match.range, in: raw),
+                  let matched = normalizedPhoneMatch(String(raw[range])) else {
+                continue
+            }
+            appendBox(
+                kind: .phone,
                 matched: matched,
                 confidence: confidence,
                 detectedAt: detectedAt,
@@ -177,6 +225,42 @@ struct VisionPIIDetector: PIIDetector {
             normalizedRect: padded,
             detectedAt: detectedAt
         ))
+    }
+
+    private func normalizedPhoneMatch(_ raw: String) -> String? {
+        let digits = raw.filter(\.isNumber)
+        guard digits.count >= 10, digits.count <= 15 else { return nil }
+        let hasLeadingPlus = raw.first { !$0.isWhitespace } == "+"
+        return hasLeadingPlus ? "+\(digits)" : digits
+    }
+
+    private func deduplicated(_ boxes: [PIIBox]) -> [PIIBox] {
+        var bestByKey: [String: PIIBox] = [:]
+        for box in boxes {
+            let key = "\(box.identityKey):\(coarseRectBucket(box.normalizedRect))"
+            if let existing = bestByKey[key], existing.confidence >= box.confidence {
+                continue
+            }
+            bestByKey[key] = box
+        }
+        return boxes.compactMap { box in
+            let key = "\(box.identityKey):\(coarseRectBucket(box.normalizedRect))"
+            guard bestByKey[key]?.confidence == box.confidence else { return nil }
+            let selected = bestByKey[key]
+            bestByKey[key] = nil
+            return selected
+        }
+    }
+
+    private func coarseRectBucket(_ rect: CGRect) -> String {
+        [
+            rect.origin.x,
+            rect.origin.y,
+            rect.width,
+            rect.height,
+        ]
+        .map { String(Int(($0 * 50).rounded())) }
+        .joined(separator: ",")
     }
 
     private func paddedRect(_ rect: CGRect, padding: CGFloat = 0.02) -> CGRect {

@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import CoreVideo
 import Foundation
 
@@ -12,13 +13,8 @@ struct DetectorSettings: Codable {
 struct BenchmarkOptions {
     var needles: [String] = []
     var checkEmail: Bool = true
-    var fps: Double = 8
+    var checkPhone: Bool = true
     var duration: Double = 5
-    var settings: [DetectorSettings] = [
-        DetectorSettings(accurate: false, maxPixelSize: 1440, minimumTextHeight: 0.012, enhanceLowContrast: false),
-        DetectorSettings(accurate: false, maxPixelSize: 1920, minimumTextHeight: 0.006, enhanceLowContrast: true),
-        DetectorSettings(accurate: true, maxPixelSize: 2560, minimumTextHeight: 0.004, enhanceLowContrast: true),
-    ]
     var outputPath: String?
     var csvPath: String?
 }
@@ -27,27 +23,57 @@ struct BenchmarkSummary: Codable {
     let capturedFrames: Int
     let sampledFrames: Int
     let duration: Double
-    let fps: Double
     let results: [BenchmarkResult]
 }
 
 struct BenchmarkResult: Codable {
-    let accurate: Bool
-    let maxPixelSize: CGFloat
-    let minimumTextHeight: Float
-    let enhanceLowContrast: Bool
+    let resolution: String
+    let width: Int
+    let height: Int
+    let targetFps: Double
+    let frameBudgetMS: Double
     let frames: Int
-    let latencyP50MS: Double?
-    let latencyP95MS: Double?
-    let latencyAverageMS: Double?
+    let latencyMinMS: Double
+    let latencyP95MS: Double
+    let latencyAverageMS: Double
+    let requiredRenderDelayMS: Double
+    let budgetSlackMS: Double
+    let meetsBudget: Bool
     let hitCount: Int
     let matchedKinds: [String]
 }
 
 final class BenchmarkRunner {
+    private struct ResolutionCase {
+        let width: Int
+        let height: Int
+
+        var label: String {
+            "\(width)x\(height)"
+        }
+    }
+
+    private struct ResolutionMetrics {
+        let resolution: ResolutionCase
+        let frames: Int
+        let latencyMinMS: Double
+        let latencyP95MS: Double
+        let latencyAverageMS: Double
+        let hitCount: Int
+        let matchedKinds: [String]
+    }
+
     private let options: BenchmarkOptions
     private let frameStore = FrameStore()
     private var capturedFrames = 0
+
+    private let resolutions: [ResolutionCase] = [
+        ResolutionCase(width: 1280, height: 720),
+        ResolutionCase(width: 1920, height: 1080),
+    ]
+
+    private let targetFpsValues: [Double] = [10, 30, 60]
+    private let detectorSettings = DetectorSettings()
 
     init(options: BenchmarkOptions) {
         self.options = options
@@ -57,21 +83,23 @@ final class BenchmarkRunner {
         let capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] _ in
             self?.capturedFrames += 1
         }
+
         try await capture.start()
-        defer {
-            Task {
-                await capture.stop()
-            }
-        }
+        defer { Task { await capture.stop() } }
 
         try await waitForFirstFrame()
         let frames = await sampleFrames()
-        let results = options.settings.map { benchmark(settings: $0, frames: frames) }
+        let metrics = try resolutions.map { try benchmark(resolution: $0, frames: frames) }
+        let results = metrics.flatMap { metrics in
+            targetFpsValues.map { targetFps in
+                toResult(metrics: metrics, targetFps: targetFps)
+            }
+        }
+
         return BenchmarkSummary(
             capturedFrames: capturedFrames,
             sampledFrames: frames.count,
             duration: options.duration,
-            fps: options.fps,
             results: results
         )
     }
@@ -105,20 +133,14 @@ final class BenchmarkRunner {
 
     private func sampleFrames() async -> [CVPixelBuffer] {
         let end = ProcessInfo.processInfo.systemUptime + options.duration
-        let interval = 1.0 / options.fps
-        var nextSampleAt = ProcessInfo.processInfo.systemUptime
         var lastCapturedAt: TimeInterval = 0
         var frames: [CVPixelBuffer] = []
 
         while ProcessInfo.processInfo.systemUptime < end {
-            let now = ProcessInfo.processInfo.systemUptime
-            if now >= nextSampleAt {
-                let current = frameStore.current()
-                if let buffer = current.buffer, current.capturedAt != lastCapturedAt {
-                    frames.append(buffer)
-                    lastCapturedAt = current.capturedAt
-                }
-                nextSampleAt = now + interval
+            let current = frameStore.current()
+            if let buffer = current.buffer, current.capturedAt != lastCapturedAt {
+                frames.append(buffer)
+                lastCapturedAt = current.capturedAt
             }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
@@ -126,14 +148,15 @@ final class BenchmarkRunner {
         return frames
     }
 
-    private func benchmark(settings: DetectorSettings, frames: [CVPixelBuffer]) -> BenchmarkResult {
+    private func benchmark(resolution: ResolutionCase, frames: [CVPixelBuffer]) throws -> ResolutionMetrics {
         let detector = VisionPIIDetector(
             needles: options.needles,
             checkEmail: options.checkEmail,
-            accurate: settings.accurate,
-            maxPixelSize: settings.maxPixelSize,
-            minimumTextHeight: settings.minimumTextHeight,
-            enhanceLowContrast: settings.enhanceLowContrast
+            checkPhone: options.checkPhone,
+            accurate: detectorSettings.accurate,
+            maxPixelSize: detectorSettings.maxPixelSize,
+            minimumTextHeight: detectorSettings.minimumTextHeight,
+            enhanceLowContrast: detectorSettings.enhanceLowContrast
         )
 
         var latencies: [Double] = []
@@ -142,8 +165,12 @@ final class BenchmarkRunner {
 
         for frame in frames {
             let start = DispatchTime.now().uptimeNanoseconds
-            let boxes = detector.detect(in: frame)
+            guard let resized = PixelBufferUtils.resized(frame, width: resolution.width, height: resolution.height) else {
+                continue
+            }
+            let boxes = detector.detect(in: resized)
             let end = DispatchTime.now().uptimeNanoseconds
+
             latencies.append(Double(end - start) / 1_000_000)
             hitCount += boxes.count
             for box in boxes {
@@ -151,36 +178,67 @@ final class BenchmarkRunner {
             }
         }
 
-        return BenchmarkResult(
-            accurate: settings.accurate,
-            maxPixelSize: settings.maxPixelSize,
-            minimumTextHeight: settings.minimumTextHeight,
-            enhanceLowContrast: settings.enhanceLowContrast,
-            frames: frames.count,
-            latencyP50MS: percentile(latencies, 0.50),
-            latencyP95MS: percentile(latencies, 0.95),
-            latencyAverageMS: average(latencies),
+        guard !latencies.isEmpty else {
+            throw BenchmarkError.noFrames
+        }
+
+        return ResolutionMetrics(
+            resolution: resolution,
+            frames: latencies.count,
+            latencyMinMS: latencies.min() ?? 0,
+            latencyP95MS: percentile(latencies, 0.95) ?? 0,
+            latencyAverageMS: average(latencies) ?? 0,
             hitCount: hitCount,
             matchedKinds: matchedKinds.sorted()
         )
     }
 
+    private func toResult(metrics: ResolutionMetrics, targetFps: Double) -> BenchmarkResult {
+        let frameBudgetMS = 1000.0 / targetFps
+        let budgetSlackMS = frameBudgetMS - metrics.latencyP95MS
+
+        return BenchmarkResult(
+            resolution: metrics.resolution.label,
+            width: metrics.resolution.width,
+            height: metrics.resolution.height,
+            targetFps: targetFps,
+            frameBudgetMS: frameBudgetMS,
+            frames: metrics.frames,
+            latencyMinMS: metrics.latencyMinMS,
+            latencyP95MS: metrics.latencyP95MS,
+            latencyAverageMS: metrics.latencyAverageMS,
+            requiredRenderDelayMS: metrics.latencyP95MS,
+            budgetSlackMS: budgetSlackMS,
+            meetsBudget: budgetSlackMS >= 0,
+            hitCount: metrics.hitCount,
+            matchedKinds: metrics.matchedKinds
+        )
+    }
+
     private func csv(_ summary: BenchmarkSummary) -> String {
-        var lines = ["accurate,maxPixelSize,minimumTextHeight,enhanceLowContrast,frames,latencyP50MS,latencyP95MS,latencyAverageMS,hitCount,matchedKinds"]
+        var lines = [
+            "resolution,width,height,targetFps,frameBudgetMS,frames,latencyMinMS,latencyP95MS,latencyAverageMS,requiredRenderDelayMS,budgetSlackMS,meetsBudget,hitCount,matchedKinds"
+        ]
+
         for result in summary.results {
             lines.append([
-                result.accurate ? "true" : "false",
-                String(format: "%.0f", result.maxPixelSize),
-                String(result.minimumTextHeight),
-                result.enhanceLowContrast ? "true" : "false",
+                csvEscape(result.resolution),
+                String(result.width),
+                String(result.height),
+                String(format: "%.0f", result.targetFps),
+                formatNumber(result.frameBudgetMS),
                 String(result.frames),
-                formatNumber(result.latencyP50MS),
+                formatNumber(result.latencyMinMS),
                 formatNumber(result.latencyP95MS),
                 formatNumber(result.latencyAverageMS),
+                formatNumber(result.requiredRenderDelayMS),
+                formatNumber(result.budgetSlackMS),
+                result.meetsBudget ? "true" : "false",
                 String(result.hitCount),
                 csvEscape(result.matchedKinds.joined(separator: "|")),
             ].joined(separator: ","))
         }
+
         return lines.joined(separator: "\n") + "\n"
     }
 }
@@ -208,9 +266,8 @@ private func average(_ values: [Double]) -> Double? {
     return values.reduce(0, +) / Double(values.count)
 }
 
-private func formatNumber(_ value: Double?) -> String {
-    guard let value else { return "" }
-    return String(format: "%.3f", value)
+private func formatNumber(_ value: Double) -> String {
+    String(format: "%.3f", value)
 }
 
 private func csvEscape(_ value: String) -> String {

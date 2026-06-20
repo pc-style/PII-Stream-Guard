@@ -4,6 +4,7 @@ import Foundation
 
 enum PIIKind: String, Codable {
     case email
+    case phone
     case needle
 }
 
@@ -13,6 +14,21 @@ struct PIIBox: Codable {
     let confidence: Float
     let normalizedRect: CGRect
     let detectedAt: TimeInterval
+
+    var identityKey: String {
+        "\(kind.rawValue):\(Self.normalizedMatch(kind: kind, matched: matched))"
+    }
+
+    static func normalizedMatch(kind: PIIKind, matched: String) -> String {
+        switch kind {
+        case .email, .needle:
+            return matched.lowercased().filter { !$0.isWhitespace }
+        case .phone:
+            let digits = matched.filter(\.isNumber)
+            let hasLeadingPlus = matched.first { !$0.isWhitespace } == "+"
+            return hasLeadingPlus ? "+\(digits)" : digits
+        }
+    }
 }
 
 struct DetectionSnapshot {
@@ -29,7 +45,7 @@ struct DetectionSnapshot {
         boxes: [],
         frameSize: .zero,
         capturedAt: 0,
-        guardMode: .balanced,
+        guardMode: .standard,
         armed: false,
         blackoutWholeFrame: false
     )

@@ -2,89 +2,57 @@ import CoreGraphics
 import Foundation
 
 enum GuardMode: String, CaseIterable {
-    case paranoid
-    case safe
-    case balanced
-    case fast
-    case expLow = "exp-low"
-    case expHigh = "exp-high"
+    case lockdown
+    case standard
+    case lowLatency = "low-latency"
 
     var title: String {
         switch self {
-        case .paranoid: return "Paranoid"
-        case .safe: return "Safe"
-        case .balanced: return "Balanced"
-        case .fast: return "Fast but faulty"
-        case .expLow: return "Exp Low"
-        case .expHigh: return "Exp High"
+        case .lockdown: return "Lockdown"
+        case .standard: return "Standard"
+        case .lowLatency: return "Low Latency"
         }
     }
 
     var renderDelay: TimeInterval {
         switch self {
-        case .paranoid: return 3.00
-        case .safe: return 2.50
-        case .balanced: return 0.75
-        case .fast: return 0
-        case .expLow: return 0.75
-        case .expHigh: return 0.75
-        }
-    }
-
-    var experimentalTraceBackDuration: TimeInterval {
-        switch self {
-        case .expLow, .expHigh:
-            return renderDelay + (5.0 / 60.0)
-        case .paranoid, .safe, .balanced, .fast:
-            return 0
+        case .lockdown: return 0.35
+        case .standard: return 0.12
+        case .lowLatency: return 0.05
         }
     }
 
     var detectorSettings: DetectorSettings {
         switch self {
-        case .paranoid:
-            return DetectorSettings(
-                accurate: false,
-                maxPixelSize: 1920,
-                minimumTextHeight: 0.006,
-                enhanceLowContrast: true
-            )
-        case .safe:
+        case .lockdown:
             return DetectorSettings(
                 accurate: true,
                 maxPixelSize: 2560,
                 minimumTextHeight: 0.004,
                 enhanceLowContrast: true
             )
-        case .balanced:
+        case .standard:
             return DetectorSettings(
                 accurate: false,
                 maxPixelSize: 1920,
                 minimumTextHeight: 0.006,
                 enhanceLowContrast: true
             )
-        case .fast:
+        case .lowLatency:
             return DetectorSettings(
                 accurate: false,
-                maxPixelSize: 1440,
-                minimumTextHeight: 0.012,
-                enhanceLowContrast: false
+                maxPixelSize: 1920,
+                minimumTextHeight: 0.006,
+                enhanceLowContrast: true
             )
-        case .expLow:
-            return GuardMode.balanced.detectorSettings
-        case .expHigh:
-            return GuardMode.safe.detectorSettings
         }
     }
 
     var detectionFPS: Double {
         switch self {
-        case .paranoid: return 8
-        case .safe: return 5
-        case .balanced: return 12
-        case .fast: return 12
-        case .expLow: return 12
-        case .expHigh: return 8
+        case .lockdown: return 5
+        case .standard: return 10
+        case .lowLatency: return 30
         }
     }
 
@@ -94,25 +62,29 @@ enum GuardMode: String, CaseIterable {
 
     var armingTTL: TimeInterval {
         switch self {
-        case .fast:
-            return 0.45
-        case .balanced:
+        case .lockdown:
             return renderDelay + 0.35
-        case .safe:
-            return renderDelay + 0.50
-        case .paranoid:
-            return renderDelay + 0.75
-        case .expLow, .expHigh:
-            return renderDelay + 0.50
+        case .standard:
+            return renderDelay + 0.20
+        case .lowLatency:
+            return renderDelay + 0.08
         }
     }
 
     var maxSnapshotAge: TimeInterval {
-        max(renderDelay + 0.35, armingTTL)
+        switch self {
+        case .lockdown: return renderDelay + 0.35
+        case .standard: return renderDelay + 0.20
+        case .lowLatency: return renderDelay + 0.08
+        }
     }
 
     var maxDetectionInputAge: TimeInterval {
-        max(renderDelay + 0.25, 0.50)
+        switch self {
+        case .lockdown: return 0.50
+        case .standard: return 0.25
+        case .lowLatency: return 0.12
+        }
     }
 }
 
@@ -154,23 +126,19 @@ final class GuardStateMachine {
 
     func ingest(detected boxes: [PIIBox], at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> GuardStateSnapshot {
         switch mode {
-        case .paranoid:
-            return ingestParanoid(boxes, at: now)
-        case .safe:
-            return ingestSafe(boxes, at: now)
-        case .balanced:
-            return ingestBalanced(boxes, at: now)
-        case .fast:
-            return ingestFast(boxes, at: now)
-        case .expLow, .expHigh:
-            return ingestExperimental(boxes, at: now)
+        case .lockdown:
+            return ingestLockdown(boxes, at: now)
+        case .standard:
+            return ingestStandard(boxes, at: now)
+        case .lowLatency:
+            return ingestLowLatency(boxes, at: now)
         }
     }
 
-    private func ingestParanoid(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
+    private func ingestLockdown(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
-            if shouldDisarm(at: now, missLimit: 25) {
+            if shouldDisarm(at: now, missLimit: 8) {
                 disarm()
             }
         } else {
@@ -179,23 +147,11 @@ final class GuardStateMachine {
         return snapshot()
     }
 
-    private func ingestSafe(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
-        if boxes.isEmpty {
-            misses += 1
-            if shouldDisarm(at: now, missLimit: 25) {
-                disarm()
-            }
-        } else {
-            arm(with: boxes, at: now)
-        }
-        return snapshot()
-    }
-
-    private func ingestBalanced(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
+    private func ingestStandard(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
             consecutiveSimilarDetections = 0
-            if shouldDisarm(at: now, missLimit: 15) {
+            if shouldDisarm(at: now, missLimit: 3) {
                 disarm()
             }
         } else {
@@ -212,21 +168,9 @@ final class GuardStateMachine {
         return snapshot()
     }
 
-    private func ingestFast(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
+    private func ingestLowLatency(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
-            if shouldDisarm(at: now, missLimit: 3) {
-                disarm()
-            }
-        } else {
-            arm(with: boxes, at: now)
-        }
-        return snapshot()
-    }
-
-    private func ingestExperimental(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
-        misses = boxes.isEmpty ? misses + 1 : 0
-        if boxes.isEmpty {
             if shouldDisarm(at: now, missLimit: 2) {
                 disarm()
             }
@@ -261,7 +205,7 @@ final class GuardStateMachine {
             boxes: isArmed ? armedBoxes : [],
             active: isArmed,
             mode: mode,
-            blackoutWholeFrame: isArmed && mode == .paranoid
+            blackoutWholeFrame: isArmed && mode == .lockdown
         )
     }
 

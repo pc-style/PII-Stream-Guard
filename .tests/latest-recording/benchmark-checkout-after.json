@@ -1,0 +1,52 @@
+{
+  "capturedFrames" : 253,
+  "duration" : 2,
+  "fps" : 8,
+  "results" : [
+    {
+      "accurate" : false,
+      "enhanceLowContrast" : false,
+      "frames" : 16,
+      "hitCount" : 25,
+      "latencyAverageMS" : 43.83698675,
+      "latencyP50MS" : 43.2335,
+      "latencyP95MS" : 54.217916,
+      "matchedKinds" : [
+        "email"
+      ],
+      "maxPixelSize" : 1440,
+      "minimumTextHeight" : 0.012
+    },
+    {
+      "accurate" : false,
+      "enhanceLowContrast" : true,
+      "frames" : 16,
+      "hitCount" : 55,
+      "latencyAverageMS" : 40.9436536875,
+      "latencyP50MS" : 40.780709,
+      "latencyP95MS" : 47.980875,
+      "matchedKinds" : [
+        "email",
+        "phone"
+      ],
+      "maxPixelSize" : 1920,
+      "minimumTextHeight" : 0.006
+    },
+    {
+      "accurate" : true,
+      "enhanceLowContrast" : true,
+      "frames" : 16,
+      "hitCount" : 62,
+      "latencyAverageMS" : 208.7178855,
+      "latencyP50MS" : 198.297458,
+      "latencyP95MS" : 273.908459,
+      "matchedKinds" : [
+        "email",
+        "phone"
+      ],
+      "maxPixelSize" : 2560,
+      "minimumTextHeight" : 0.004
+    }
+  ],
+  "sampledFrames" : 16
+}

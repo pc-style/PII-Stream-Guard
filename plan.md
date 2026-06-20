@@ -24,8 +24,8 @@ repurposed for **real-time PII-leak detection**.
 - [x] CLI: `pii-stream watch [--needle …] [--no-email] [--fps N] [--accurate]`
 - [x] JSON detection lines to stdout
 - [x] Manual smoke test: large plain emails (e.g. `test@example.com`) and sign-in pill emails (e.g. `adam00krupa@gmail.com`) box correctly
-- [x] Preview controls: safe / balanced / fast mode toggle, bounding-box / blackout toggle, preview recorder
-- [x] Initial low-contrast small-text pass: safe/balanced modes can boost OCR contrast/sharpness and use lower `minimumTextHeight`
+- [x] Preview controls: lockdown / standard / low-latency mode toggle, bounding-box / blackout toggle, preview recorder
+- [x] Initial low-contrast small-text pass: lockdown/standard modes can boost OCR contrast/sharpness and use lower `minimumTextHeight`
 
 ### Next (in order)
 
