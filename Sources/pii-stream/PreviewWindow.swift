@@ -11,6 +11,7 @@ final class PreviewView: NSView {
 
     var boxes: [PIIBox] = []
     var frameSize: CGSize = .zero
+    var maskMode: MaskMode = .boundingBox
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -43,11 +44,12 @@ final class PreviewView: NSView {
         }
     }
 
-    func updateOverlay(boxes: [PIIBox], frameSize: CGSize) {
+    func updateOverlay(boxes: [PIIBox], frameSize: CGSize, maskMode: MaskMode) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.boxes = boxes
             self.frameSize = frameSize
+            self.maskMode = maskMode
             self.redrawOverlay()
         }
     }
@@ -75,11 +77,17 @@ final class PreviewView: NSView {
 
             let boxLayer = CALayer()
             boxLayer.frame = scaled
-            boxLayer.borderColor = NSColor.systemRed.cgColor
-            boxLayer.borderWidth = 2
-            boxLayer.backgroundColor = NSColor.systemRed.withAlphaComponent(0.15).cgColor
+            switch maskMode {
+            case .boundingBox:
+                boxLayer.borderColor = NSColor.systemRed.cgColor
+                boxLayer.borderWidth = 2
+                boxLayer.backgroundColor = NSColor.systemRed.withAlphaComponent(0.15).cgColor
+            case .blackout:
+                boxLayer.backgroundColor = NSColor.black.cgColor
+            }
             overlayLayer.addSublayer(boxLayer)
 
+            guard maskMode == .boundingBox else { continue }
             let label = CATextLayer()
             label.string = "\(box.kind.rawValue): \(box.matched)"
             label.fontSize = 11
@@ -106,10 +114,25 @@ final class PreviewWindowController: NSWindowController {
     private let previewView: PreviewView
     private let frameStore: FrameStore
     private let boxStore: BoxStore
+    private let onModeChanged: (GuardMode) -> Void
+    private let recorder = PreviewRecorder()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private var timer: Timer?
+    private var guardMode: GuardMode
+    private var maskMode: MaskMode = .boundingBox
+    private var isRecording = false
 
-    init(frameStore: FrameStore, boxStore: BoxStore, windowSize: CGSize) {
+    init(
+        frameStore: FrameStore,
+        boxStore: BoxStore,
+        windowSize: CGSize,
+        initialMode: GuardMode,
+        onModeChanged: @escaping (GuardMode) -> Void
+    ) {
         self.frameStore = frameStore
         self.boxStore = boxStore
+        self.guardMode = initialMode
+        self.onModeChanged = onModeChanged
         previewView = PreviewView(frame: NSRect(origin: .zero, size: windowSize))
 
         let window = NSWindow(
@@ -119,11 +142,12 @@ final class PreviewWindowController: NSWindowController {
             defer: false
         )
         window.title = "PII-Stream Preview"
-        window.contentView = previewView
+        window.contentView = NSView()
         window.center()
         window.makeKeyAndOrderFront(nil)
 
         super.init(window: window)
+        window.contentView = makeContentView(windowSize: windowSize)
         startDisplayLoop()
     }
 
@@ -134,24 +158,111 @@ final class PreviewWindowController: NSWindowController {
 
     deinit {
         stopDisplayLoop()
+        recorder.stop()
     }
 
     private func startDisplayLoop() {
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        self.timer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func stopDisplayLoop() {}
+    private func stopDisplayLoop() {
+        timer?.invalidate()
+        timer = nil
+    }
 
     private func tick() {
-        let (buffer, _) = frameStore.current()
-        if let buffer {
-            previewView.updateFrame(buffer)
+        let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
+        guard let sample = frameStore.sample(atOrBefore: targetTime) else { return }
+        let snapshot = boxStore.snapshot(atOrBefore: sample.capturedAt)
+        previewView.updateFrame(sample.pixelBuffer)
+        previewView.updateOverlay(boxes: snapshot.boxes, frameSize: sample.frameSize, maskMode: maskMode)
+
+        if isRecording {
+            recorder.append(
+                sample: sample,
+                boxes: snapshot.boxes,
+                maskMode: maskMode,
+                guardMode: guardMode,
+                isArmed: !snapshot.boxes.isEmpty
+            )
         }
-        let snapshot = boxStore.current()
-        previewView.updateOverlay(boxes: snapshot.boxes, frameSize: snapshot.frameSize)
+        updateStatus(boxCount: snapshot.boxes.count)
+    }
+
+    private func makeContentView(windowSize: CGSize) -> NSView {
+        let modeControl = NSSegmentedControl(
+            labels: GuardMode.allCases.map(\.title),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(modeChanged(_:))
+        )
+        modeControl.selectedSegment = GuardMode.allCases.firstIndex(of: guardMode) ?? 1
+
+        let maskControl = NSSegmentedControl(
+            labels: ["Boxes", "Blackout"],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(maskChanged(_:))
+        )
+        maskControl.selectedSegment = 0
+
+        let recordButton = NSButton(title: "Record", target: self, action: #selector(recordChanged(_:)))
+        recordButton.setButtonType(.toggle)
+
+        statusLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        statusLabel.textColor = .secondaryLabelColor
+
+        let controls = NSStackView(views: [modeControl, maskControl, recordButton, statusLabel])
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 12
+        controls.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+
+        let root = NSStackView(views: [controls, previewView])
+        root.orientation = .vertical
+        root.spacing = 0
+        root.frame = NSRect(origin: .zero, size: windowSize)
+        root.autoresizingMask = [.width, .height]
+        previewView.heightAnchor.constraint(greaterThanOrEqualToConstant: windowSize.height - 44).isActive = true
+        return root
+    }
+
+    @objc private func modeChanged(_ sender: NSSegmentedControl) {
+        let modes = GuardMode.allCases
+        guard sender.selectedSegment >= 0, sender.selectedSegment < modes.count else { return }
+        guardMode = modes[sender.selectedSegment]
+        onModeChanged(guardMode)
+    }
+
+    @objc private func maskChanged(_ sender: NSSegmentedControl) {
+        maskMode = sender.selectedSegment == 1 ? .blackout : .boundingBox
+    }
+
+    @objc private func recordChanged(_ sender: NSButton) {
+        if sender.state == .on {
+            do {
+                let url = try recorder.start()
+                isRecording = true
+                statusLabel.stringValue = "Recording \(url.lastPathComponent)"
+            } catch {
+                sender.state = .off
+                isRecording = false
+                statusLabel.stringValue = "Recording failed: \(error.localizedDescription)"
+            }
+        } else {
+            isRecording = false
+            recorder.stop()
+            statusLabel.stringValue = "Recording stopped"
+        }
+    }
+
+    private func updateStatus(boxCount: Int) {
+        guard !isRecording else { return }
+        statusLabel.stringValue = "\(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  boxes \(boxCount)"
     }
 }
 
@@ -164,18 +275,16 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     private var preview: PreviewWindowController?
     private let detectionQueue = DispatchQueue(label: "pii-stream.detection")
     private var detector: VisionPIIDetector
+    private var guardState: GuardStateMachine
+    private var guardMode: GuardMode
     private var lastDetectionTime: TimeInterval = 0
     private var lastLoggedSignature: String = ""
 
     init(options: WatchOptions) {
         self.options = options
-        detector = VisionPIIDetector(
-            needles: options.needles,
-            checkEmail: options.checkEmail,
-            accurate: options.settings.accurate,
-            maxPixelSize: options.settings.maxPixelSize,
-            minimumTextHeight: options.settings.minimumTextHeight
-        )
+        guardMode = options.mode
+        detector = AppCoordinator.makeDetector(options: options, mode: options.mode)
+        guardState = GuardStateMachine(mode: options.mode)
         super.init()
     }
 
@@ -185,8 +294,11 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         preview = PreviewWindowController(
             frameStore: frameStore,
             boxStore: boxStore,
-            windowSize: CGSize(width: 1280, height: 800)
-        )
+            windowSize: CGSize(width: 1280, height: 800),
+            initialMode: options.mode
+        ) { [weak self] mode in
+            self?.setMode(mode)
+        }
 
         capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] in
             self?.scheduleDetectionIfNeeded()
@@ -210,29 +322,48 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         detectionQueue.async { [weak self] in
             guard let self else { return }
             let now = ProcessInfo.processInfo.systemUptime
-            let interval = 1.0 / self.options.fps
+            let interval = 1.0 / (self.options.fps ?? self.guardMode.detectionFPS)
             guard now - self.lastDetectionTime >= interval else { return }
             self.lastDetectionTime = now
 
-            let (buffer, _) = self.frameStore.current()
-            guard let buffer else { return }
+            guard let sample = self.frameStore.currentSample() else { return }
 
-            let width = CGFloat(CVPixelBufferGetWidth(buffer))
-            let height = CGFloat(CVPixelBufferGetHeight(buffer))
-            let frameSize = CGSize(width: width, height: height)
-
-            let boxes = self.detector.detect(in: buffer)
-            self.boxStore.update(boxes, frameSize: frameSize)
-            self.logDetections(boxes)
+            let boxes = self.detector.detect(in: sample.pixelBuffer)
+            let guardSnapshot = self.guardState.ingest(detected: boxes)
+            self.boxStore.update(guardSnapshot.boxes, frameSize: sample.frameSize, capturedAt: sample.capturedAt)
+            self.logDetections(boxes, guardSnapshot: guardSnapshot)
         }
     }
 
-    private func logDetections(_ boxes: [PIIBox]) {
+    private func setMode(_ mode: GuardMode) {
+        detectionQueue.async { [weak self] in
+            guard let self else { return }
+            self.guardMode = mode
+            self.guardState.setMode(mode)
+            self.detector = AppCoordinator.makeDetector(options: self.options, mode: mode)
+            self.lastDetectionTime = 0
+        }
+    }
+
+    private static func makeDetector(options: WatchOptions, mode: GuardMode) -> VisionPIIDetector {
+        let settings = options.settingsOverride ?? mode.detectorSettings
+        return VisionPIIDetector(
+            needles: options.needles,
+            checkEmail: options.checkEmail,
+            accurate: settings.accurate,
+            maxPixelSize: settings.maxPixelSize,
+            minimumTextHeight: settings.minimumTextHeight,
+            enhanceLowContrast: settings.enhanceLowContrast
+        )
+    }
+
+    private func logDetections(_ boxes: [PIIBox], guardSnapshot: GuardStateSnapshot) {
         guard !boxes.isEmpty else {
             lastLoggedSignature = ""
             return
         }
         let signature = boxes.map { "\($0.kind.rawValue):\($0.matched)" }.sorted().joined(separator: "|")
+            + "|\(guardSnapshot.mode.rawValue)|armed:\(guardSnapshot.active)"
         guard signature != lastLoggedSignature else { return }
         lastLoggedSignature = signature
 
@@ -242,6 +373,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
                 "matched": box.matched,
                 "confidence": box.confidence,
                 "detectedAt": box.detectedAt,
+                "guardMode": guardSnapshot.mode.rawValue,
+                "armed": guardSnapshot.active,
                 "rect": [
                     "x": box.normalizedRect.origin.x,
                     "y": box.normalizedRect.origin.y,
@@ -260,8 +393,9 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
 struct WatchOptions {
     var needles: [String] = []
     var checkEmail: Bool = true
-    var fps: Double = 8
-    var settings = DetectorSettings()
+    var fps: Double?
+    var mode: GuardMode = .balanced
+    var settingsOverride: DetectorSettings?
 }
 
 enum CLI {
@@ -285,6 +419,7 @@ enum CLI {
 
     private static func parseWatchOptions(_ args: [String]) throws -> WatchOptions {
         var options = WatchOptions()
+        var settingsOverride: DetectorSettings?
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -300,25 +435,42 @@ enum CLI {
                     throw CLIError.invalidValue("--fps")
                 }
                 options.fps = fps
+            case "--mode":
+                i += 1
+                guard i < args.count, let mode = parseGuardMode(args[i]) else {
+                    throw CLIError.invalidValue("--mode")
+                }
+                options.mode = mode
             case "--accurate":
-                options.settings.accurate = true
+                var settings = settingsOverride ?? options.mode.detectorSettings
+                settings.accurate = true
+                settingsOverride = settings
             case "--min-text-height":
                 i += 1
                 guard i < args.count, let value = Float(args[i]), value > 0, value < 1 else {
                     throw CLIError.invalidValue("--min-text-height")
                 }
-                options.settings.minimumTextHeight = value
+                var settings = settingsOverride ?? options.mode.detectorSettings
+                settings.minimumTextHeight = value
+                settingsOverride = settings
             case "--max-pixel-size":
                 i += 1
                 guard i < args.count, let value = Double(args[i]), value > 0 else {
                     throw CLIError.invalidValue("--max-pixel-size")
                 }
-                options.settings.maxPixelSize = CGFloat(value)
+                var settings = settingsOverride ?? options.mode.detectorSettings
+                settings.maxPixelSize = CGFloat(value)
+                settingsOverride = settings
+            case "--enhance-low-contrast":
+                var settings = settingsOverride ?? options.mode.detectorSettings
+                settings.enhanceLowContrast = true
+                settingsOverride = settings
             default:
                 throw CLIError.unknownFlag(args[i])
             }
             i += 1
         }
+        options.settingsOverride = settingsOverride
         return options
     }
 
@@ -391,11 +543,32 @@ enum CLI {
             case "minimumTextHeight":
                 guard let parsed = Float(pieces[1]), parsed > 0, parsed < 1 else { return nil }
                 settings.minimumTextHeight = parsed
+            case "enhanceLowContrast":
+                if pieces[1] == "true" {
+                    settings.enhanceLowContrast = true
+                } else if pieces[1] == "false" {
+                    settings.enhanceLowContrast = false
+                } else {
+                    return nil
+                }
             default:
                 return nil
             }
         }
         return settings
+    }
+
+    private static func parseGuardMode(_ value: String) -> GuardMode? {
+        switch value.lowercased() {
+        case "safe":
+            return .safe
+        case "balanced":
+            return .balanced
+        case "fast", "fast-but-faulty", "fast_but_faulty":
+            return .fast
+        default:
+            return nil
+        }
     }
 
     static let helpText = """
@@ -408,12 +581,15 @@ enum CLI {
     Watch options:
       --needle TEXT   Additional PII needle to match (repeatable)
       --no-email      Disable email regex detection
-      --fps N         Detection rate (default: 8)
+      --mode MODE     safe, balanced, or fast (default: balanced)
+      --fps N         Override mode detection rate
       --accurate      Use accurate Vision OCR (slower)
       --min-text-height N
-                     Vision minimum text height (default: 0.012)
+                     Override Vision minimum text height
       --max-pixel-size N
-                     Longest OCR side after downscale (default: 1440)
+                     Override longest OCR side after downscale
+      --enhance-low-contrast
+                     Boost contrast/sharpness before OCR
 
     Benchmark options:
       --needle TEXT   Additional PII needle to match (repeatable)
@@ -421,7 +597,7 @@ enum CLI {
       --fps N         Screen sample rate (default: 8)
       --duration N    Capture duration in seconds (default: 5)
       --config SPEC   Detector config, repeatable. Example:
-                     accurate=false,maxPixelSize=1920,minimumTextHeight=0.008
+                     accurate=false,maxPixelSize=1920,minimumTextHeight=0.006,enhanceLowContrast=true
       --output PATH   Write JSON summary to PATH instead of stdout
       --csv PATH      Write CSV summary to PATH
 

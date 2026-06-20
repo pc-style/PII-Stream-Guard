@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreVideo
 import Foundation
 
 enum PIIKind: String, Codable {
@@ -16,5 +17,12 @@ struct PIIBox: Codable {
 
 struct DetectionSnapshot {
     let boxes: [PIIBox]
+    let frameSize: CGSize
+    let capturedAt: TimeInterval
+}
+
+struct FrameSample {
+    let pixelBuffer: CVPixelBuffer
+    let capturedAt: TimeInterval
     let frameSize: CGSize
 }

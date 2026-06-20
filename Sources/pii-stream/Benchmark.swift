@@ -6,6 +6,7 @@ struct DetectorSettings: Codable {
     var accurate: Bool = false
     var maxPixelSize: CGFloat = 1440
     var minimumTextHeight: Float = 0.012
+    var enhanceLowContrast: Bool = false
 }
 
 struct BenchmarkOptions {
@@ -14,9 +15,9 @@ struct BenchmarkOptions {
     var fps: Double = 8
     var duration: Double = 5
     var settings: [DetectorSettings] = [
-        DetectorSettings(accurate: false, maxPixelSize: 1440, minimumTextHeight: 0.012),
-        DetectorSettings(accurate: false, maxPixelSize: 1920, minimumTextHeight: 0.008),
-        DetectorSettings(accurate: true, maxPixelSize: 1920, minimumTextHeight: 0.008),
+        DetectorSettings(accurate: false, maxPixelSize: 1440, minimumTextHeight: 0.012, enhanceLowContrast: false),
+        DetectorSettings(accurate: false, maxPixelSize: 1920, minimumTextHeight: 0.006, enhanceLowContrast: true),
+        DetectorSettings(accurate: true, maxPixelSize: 2560, minimumTextHeight: 0.004, enhanceLowContrast: true),
     ]
     var outputPath: String?
     var csvPath: String?
@@ -34,6 +35,7 @@ struct BenchmarkResult: Codable {
     let accurate: Bool
     let maxPixelSize: CGFloat
     let minimumTextHeight: Float
+    let enhanceLowContrast: Bool
     let frames: Int
     let latencyP50MS: Double?
     let latencyP95MS: Double?
@@ -130,7 +132,8 @@ final class BenchmarkRunner {
             checkEmail: options.checkEmail,
             accurate: settings.accurate,
             maxPixelSize: settings.maxPixelSize,
-            minimumTextHeight: settings.minimumTextHeight
+            minimumTextHeight: settings.minimumTextHeight,
+            enhanceLowContrast: settings.enhanceLowContrast
         )
 
         var latencies: [Double] = []
@@ -152,6 +155,7 @@ final class BenchmarkRunner {
             accurate: settings.accurate,
             maxPixelSize: settings.maxPixelSize,
             minimumTextHeight: settings.minimumTextHeight,
+            enhanceLowContrast: settings.enhanceLowContrast,
             frames: frames.count,
             latencyP50MS: percentile(latencies, 0.50),
             latencyP95MS: percentile(latencies, 0.95),
@@ -162,12 +166,13 @@ final class BenchmarkRunner {
     }
 
     private func csv(_ summary: BenchmarkSummary) -> String {
-        var lines = ["accurate,maxPixelSize,minimumTextHeight,frames,latencyP50MS,latencyP95MS,latencyAverageMS,hitCount,matchedStrings"]
+        var lines = ["accurate,maxPixelSize,minimumTextHeight,enhanceLowContrast,frames,latencyP50MS,latencyP95MS,latencyAverageMS,hitCount,matchedStrings"]
         for result in summary.results {
             lines.append([
                 result.accurate ? "true" : "false",
                 String(format: "%.0f", result.maxPixelSize),
                 String(result.minimumTextHeight),
+                result.enhanceLowContrast ? "true" : "false",
                 String(result.frames),
                 formatNumber(result.latencyP50MS),
                 formatNumber(result.latencyP95MS),

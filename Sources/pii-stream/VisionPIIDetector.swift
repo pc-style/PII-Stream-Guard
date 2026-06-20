@@ -36,6 +36,7 @@ struct VisionPIIDetector: PIIDetector {
     let accurate: Bool
     let maxPixelSize: CGFloat
     let minimumTextHeight: Float
+    let enhanceLowContrast: Bool
 
     private let emailRegex = try! NSRegularExpression(
         pattern: "\\b[A-Z0-9._%+-]+\\s*@\\s*(?:[A-Z0-9-]+\\s*\\.\\s*)+[A-Z]{2,}\\b",
@@ -49,17 +50,19 @@ struct VisionPIIDetector: PIIDetector {
         checkEmail: Bool = true,
         accurate: Bool = false,
         maxPixelSize: CGFloat = 1440,
-        minimumTextHeight: Float = 0.012
+        minimumTextHeight: Float = 0.012,
+        enhanceLowContrast: Bool = false
     ) {
         self.needles = needles
         self.checkEmail = checkEmail
         self.accurate = accurate
         self.maxPixelSize = maxPixelSize
         self.minimumTextHeight = minimumTextHeight
+        self.enhanceLowContrast = enhanceLowContrast
     }
 
     func detect(in pixelBuffer: CVPixelBuffer) -> [PIIBox] {
-        let scaled = downscale(pixelBuffer)
+        let scaled = prepareForOCR(pixelBuffer)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = accurate ? .accurate : .fast
         request.usesLanguageCorrection = false
@@ -185,15 +188,15 @@ struct VisionPIIDetector: PIIDetector {
         return r
     }
 
-    private func downscale(_ buffer: CVPixelBuffer) -> CVPixelBuffer {
+    private func prepareForOCR(_ buffer: CVPixelBuffer) -> CVPixelBuffer {
         let width = CGFloat(CVPixelBufferGetWidth(buffer))
         let height = CGFloat(CVPixelBufferGetHeight(buffer))
         let longest = max(width, height)
-        guard longest > maxPixelSize else { return buffer }
-
-        let scale = maxPixelSize / longest
+        let scale = longest > maxPixelSize ? maxPixelSize / longest : 1
         let newWidth = Int((width * scale).rounded())
         let newHeight = Int((height * scale).rounded())
+
+        guard scale != 1 || enhanceLowContrast else { return buffer }
 
         var output: CVPixelBuffer?
         let attrs: [String: Any] = [
@@ -210,9 +213,20 @@ struct VisionPIIDetector: PIIDetector {
         )
         guard let out = output else { return buffer }
 
-        let inputImage = CIImage(cvPixelBuffer: buffer)
-        let scaled = inputImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        ciContext.render(scaled, to: out)
+        var image = CIImage(cvPixelBuffer: buffer)
+        if enhanceLowContrast {
+            image = image
+                .applyingFilter("CIColorControls", parameters: [
+                    kCIInputSaturationKey: 0,
+                    kCIInputContrastKey: 1.45,
+                    kCIInputBrightnessKey: 0.02,
+                ])
+                .applyingFilter("CISharpenLuminance", parameters: [
+                    kCIInputSharpnessKey: 0.75,
+                ])
+        }
+        let prepared = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        ciContext.render(prepared, to: out)
         return out
     }
 }

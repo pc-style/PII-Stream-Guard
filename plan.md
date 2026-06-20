@@ -24,6 +24,8 @@ repurposed for **real-time PII-leak detection**.
 - [x] CLI: `pii-stream watch [--needle …] [--no-email] [--fps N] [--accurate]`
 - [x] JSON detection lines to stdout
 - [x] Manual smoke test: large plain emails (e.g. `test@example.com`) and sign-in pill emails (e.g. `adam00krupa@gmail.com`) box correctly
+- [x] Preview controls: safe / balanced / fast mode toggle, bounding-box / blackout toggle, preview recorder
+- [x] Initial low-contrast small-text pass: safe/balanced modes can boost OCR contrast/sharpness and use lower `minimumTextHeight`
 
 ### Next (in order)
 
@@ -40,7 +42,7 @@ repurposed for **real-time PII-leak detection**.
    - Report per-config: latency (p50/p95), hit count, matched strings
    - Output JSON/CSV summary for comparison runs
 
-3. **[ ] Tune small-text detection** (use benchmark to pick defaults)
+3. **[~] Tune small-text detection** (use benchmark to pick defaults)
    - Lower `minimumTextHeight` (currently `0.012`) without killing fps
    - Consider higher OCR resolution cap or adaptive downscale
    - Validate on hard cases: Google sign-in footer ("English (United States)"), small UI chrome
