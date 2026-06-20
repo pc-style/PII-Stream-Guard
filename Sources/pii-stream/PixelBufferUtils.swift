@@ -13,12 +13,23 @@ enum PixelBufferUtils {
         let format = CVPixelBufferGetPixelFormatType(source)
         var destination: CVPixelBuffer?
 
+        // Keep the destination layout compatible with the source. We still copy
+        // row-by-row below, because CoreVideo may give the destination a
+        // different bytesPerRow (row padding/alignment) than the source — a
+        // single memcpy sized by the source stride would then overrun the
+        // destination and crash (EXC_BAD_ACCESS).
+        let attributes: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+
         let status = CVPixelBufferCreate(
             kCFAllocatorDefault,
             width,
             height,
             format,
-            nil,
+            attributes as CFDictionary,
             &destination
         )
 
@@ -35,21 +46,31 @@ enum PixelBufferUtils {
 
         if CVPixelBufferIsPlanar(source) {
             let planeCount = CVPixelBufferGetPlaneCount(source)
+            guard CVPixelBufferGetPlaneCount(dest) == planeCount else { return nil }
             for plane in 0..<planeCount {
                 guard let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
                       let dst = CVPixelBufferGetBaseAddressOfPlane(dest, plane) else {
-                    continue
+                    return nil
                 }
-                let bytes = CVPixelBufferGetBytesPerRowOfPlane(source, plane) * CVPixelBufferGetHeightOfPlane(source, plane)
-                memcpy(dst, src, bytes)
+                let srcStride = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
+                let dstStride = CVPixelBufferGetBytesPerRowOfPlane(dest, plane)
+                let planeHeight = CVPixelBufferGetHeightOfPlane(source, plane)
+                let rowBytes = min(srcStride, dstStride)
+                for row in 0..<planeHeight {
+                    memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+                }
             }
         } else {
             guard let src = CVPixelBufferGetBaseAddress(source),
                   let dst = CVPixelBufferGetBaseAddress(dest) else {
                 return nil
             }
-            let bytes = CVPixelBufferGetBytesPerRow(source) * height
-            memcpy(dst, src, bytes)
+            let srcStride = CVPixelBufferGetBytesPerRow(source)
+            let dstStride = CVPixelBufferGetBytesPerRow(dest)
+            let rowBytes = min(srcStride, dstStride)
+            for row in 0..<height {
+                memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+            }
         }
 
         return dest
