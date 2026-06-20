@@ -45,9 +45,10 @@ private struct RemoteDetection: Codable {
     }
 
     var box: PIIBox {
-        PIIBox(
+        let safeMatchedLength = max(0, min(matchedLength, 10_000))
+        return PIIBox(
             kind: kind,
-            matched: String(repeating: "*", count: matchedLength),
+            matched: String(repeating: "*", count: safeMatchedLength),
             confidence: confidence,
             normalizedRect: rect.cgRect,
             detectedAt: detectedAt
