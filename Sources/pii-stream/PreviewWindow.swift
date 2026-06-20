@@ -156,6 +156,7 @@ final class PreviewWindowController: NSWindowController {
         boxStore: BoxStore,
         windowSize: CGSize,
         initialMode: GuardMode,
+        placement: WindowPlacement = .center,
         onModeChanged: @escaping (GuardMode) -> Void
     ) {
         self.frameStore = frameStore
@@ -173,7 +174,12 @@ final class PreviewWindowController: NSWindowController {
         window.title = "PII-Stream Preview"
         window.sharingType = .none
         window.contentView = NSView()
-        window.center()
+        // Place the window per the chosen placement (default: centered).
+        if let screen = NSScreen.main, let frame = placement.frame(on: screen) {
+            window.setFrame(frame, display: true)
+        } else {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
 
         super.init(window: window)
@@ -362,7 +368,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             frameStore: frameStore,
             boxStore: boxStore,
             windowSize: CGSize(width: 1280, height: 800),
-            initialMode: options.mode
+            initialMode: options.mode,
+            placement: options.placement
         ) { [weak self] mode in
             self?.setMode(mode)
         }
@@ -548,6 +555,28 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 }
 
+enum WindowPlacement: String {
+    case center
+    case left
+    case right
+
+    /// The window frame for this placement on the given screen, or nil to
+    /// fall back to the default centered placement.
+    func frame(on screen: NSScreen) -> NSRect? {
+        let vf = screen.visibleFrame
+        switch self {
+        case .center:
+            return nil
+        case .left:
+            let halfWidth = (vf.width / 2).rounded(.down)
+            return NSRect(x: vf.minX, y: vf.minY, width: halfWidth, height: vf.height)
+        case .right:
+            let halfWidth = (vf.width / 2).rounded(.down)
+            return NSRect(x: vf.maxX - halfWidth, y: vf.minY, width: halfWidth, height: vf.height)
+        }
+    }
+}
+
 struct WatchOptions {
     var needles: [String] = []
     var checkEmail: Bool = true
@@ -557,6 +586,7 @@ struct WatchOptions {
     var settingsOverride: DetectorSettings?
     var remote: String?
     var token: String?
+    var placement: WindowPlacement = .center
 
     var processingOptions: FrameProcessingOptions {
         FrameProcessingOptions(
@@ -649,6 +679,12 @@ enum CLI {
                 var settings = settingsOverride ?? options.mode.detectorSettings
                 settings.enhanceLowContrast = true
                 settingsOverride = settings
+            case "--position":
+                i += 1
+                guard i < args.count, let placement = WindowPlacement(rawValue: args[i]) else {
+                    throw CLIError.invalidValue("--position")
+                }
+                options.placement = placement
             case "--remote":
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--remote") }
