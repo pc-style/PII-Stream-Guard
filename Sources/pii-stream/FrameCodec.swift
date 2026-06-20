@@ -70,6 +70,7 @@ enum FrameCodec {
             bytesPerRow: 0,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
         ) else {
             throw FrameCodecError.cannotCreateBitmap
         }
@@ -123,6 +124,7 @@ enum FrameCodec {
             bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
         ) else {
             throw FrameCodecError.cannotCreateBitmap
         }
@@ -132,7 +134,7 @@ enum FrameCodec {
 
     private static func pixelRect(for rect: CGRect, width: Int, height: Int) -> CGRect {
         let x = rect.origin.x * CGFloat(width)
-        let y = rect.origin.y * CGFloat(height)
+        let y = (1 - rect.origin.y - rect.height) * CGFloat(height)
         let w = rect.width * CGFloat(width)
         let h = rect.height * CGFloat(height)
         return CGRect(x: x, y: y, width: w, height: h)
