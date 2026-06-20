@@ -8,5 +8,6 @@ DerivedData/
 *.xcuserdata/
 *.swp
 *.log
+.pii-stream.env
 benchmark-results/
 recordings/
