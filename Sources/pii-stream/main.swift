@@ -10,6 +10,9 @@ do {
         let coordinator = AppCoordinator(options: options)
         app.delegate = coordinator
         app.run()
+    case .serve(let options):
+        let server = ProcessingServer(options: options)
+        try server.start()
     case .benchmark(let options):
         let semaphore = DispatchSemaphore(value: 0)
         var exitCode: Int32 = 0
