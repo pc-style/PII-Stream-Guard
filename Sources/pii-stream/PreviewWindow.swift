@@ -12,6 +12,7 @@ final class PreviewView: NSView {
     var boxes: [PIIBox] = []
     var frameSize: CGSize = .zero
     var maskMode: MaskMode = .boundingBox
+    var blackoutWholeFrame = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -44,12 +45,13 @@ final class PreviewView: NSView {
         }
     }
 
-    func updateOverlay(boxes: [PIIBox], frameSize: CGSize, maskMode: MaskMode) {
+    func updateOverlay(boxes: [PIIBox], frameSize: CGSize, maskMode: MaskMode, blackoutWholeFrame: Bool) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.boxes = boxes
             self.frameSize = frameSize
             self.maskMode = maskMode
+            self.blackoutWholeFrame = blackoutWholeFrame
             self.redrawOverlay()
         }
     }
@@ -65,6 +67,14 @@ final class PreviewView: NSView {
         let drawnHeight = frameSize.height * scale
         let offsetX = (viewBounds.width - drawnWidth) / 2
         let offsetY = (viewBounds.height - drawnHeight) / 2
+
+        if blackoutWholeFrame {
+            let blackoutLayer = CALayer()
+            blackoutLayer.frame = CGRect(x: offsetX, y: offsetY, width: drawnWidth, height: drawnHeight)
+            blackoutLayer.backgroundColor = NSColor.black.cgColor
+            overlayLayer.addSublayer(blackoutLayer)
+            return
+        }
 
         for box in boxes {
             let rect = visionRectToView(box.normalizedRect, frameSize: frameSize)
@@ -177,9 +187,14 @@ final class PreviewWindowController: NSWindowController {
     private func tick() {
         let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
         guard let sample = frameStore.sample(atOrBefore: targetTime) else { return }
-        let snapshot = boxStore.snapshot(atOrBefore: sample.capturedAt)
+        let snapshot = boxStore.current()
         previewView.updateFrame(sample.pixelBuffer)
-        previewView.updateOverlay(boxes: snapshot.boxes, frameSize: sample.frameSize, maskMode: maskMode)
+        previewView.updateOverlay(
+            boxes: snapshot.boxes,
+            frameSize: sample.frameSize,
+            maskMode: maskMode,
+            blackoutWholeFrame: snapshot.blackoutWholeFrame
+        )
 
         if isRecording {
             recorder.append(
@@ -187,10 +202,11 @@ final class PreviewWindowController: NSWindowController {
                 boxes: snapshot.boxes,
                 maskMode: maskMode,
                 guardMode: guardMode,
-                isArmed: !snapshot.boxes.isEmpty
+                isArmed: snapshot.armed,
+                blackoutWholeFrame: snapshot.blackoutWholeFrame
             )
         }
-        updateStatus(boxCount: snapshot.boxes.count)
+        updateStatus(boxCount: snapshot.boxes.count, armed: snapshot.armed)
     }
 
     private func makeContentView(windowSize: CGSize) -> NSView {
@@ -260,9 +276,9 @@ final class PreviewWindowController: NSWindowController {
         }
     }
 
-    private func updateStatus(boxCount: Int) {
+    private func updateStatus(boxCount: Int, armed: Bool) {
         guard !isRecording else { return }
-        statusLabel.stringValue = "\(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  boxes \(boxCount)"
+        statusLabel.stringValue = "\(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  armed \(armed ? "yes" : "no")  boxes \(boxCount)"
     }
 }
 
@@ -300,8 +316,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             self?.setMode(mode)
         }
 
-        capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] in
-            self?.scheduleDetectionIfNeeded()
+        capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] sample in
+            self?.scheduleDetectionIfNeeded(sample: sample)
         }
 
         Task {
@@ -318,19 +334,27 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         true
     }
 
-    private func scheduleDetectionIfNeeded() {
+    private func scheduleDetectionIfNeeded(sample: FrameSample) {
         detectionQueue.async { [weak self] in
             guard let self else { return }
             let now = ProcessInfo.processInfo.systemUptime
-            let interval = 1.0 / (self.options.fps ?? self.guardMode.detectionFPS)
-            guard now - self.lastDetectionTime >= interval else { return }
+            let detectionFPS = self.options.fps ?? self.guardMode.detectionFPS
+            if detectionFPS > 0 {
+                let interval = 1.0 / detectionFPS
+                guard now - self.lastDetectionTime >= interval else { return }
+            }
             self.lastDetectionTime = now
-
-            guard let sample = self.frameStore.currentSample() else { return }
 
             let boxes = self.detector.detect(in: sample.pixelBuffer)
             let guardSnapshot = self.guardState.ingest(detected: boxes)
-            self.boxStore.update(guardSnapshot.boxes, frameSize: sample.frameSize, capturedAt: sample.capturedAt)
+            self.boxStore.update(DetectionSnapshot(
+                boxes: guardSnapshot.boxes,
+                frameSize: sample.frameSize,
+                capturedAt: sample.capturedAt,
+                guardMode: guardSnapshot.mode,
+                armed: guardSnapshot.active,
+                blackoutWholeFrame: guardSnapshot.blackoutWholeFrame
+            ))
             self.logDetections(boxes, guardSnapshot: guardSnapshot)
         }
     }
@@ -560,6 +584,8 @@ enum CLI {
 
     private static func parseGuardMode(_ value: String) -> GuardMode? {
         switch value.lowercased() {
+        case "paranoid":
+            return .paranoid
         case "safe":
             return .safe
         case "balanced":
@@ -581,7 +607,7 @@ enum CLI {
     Watch options:
       --needle TEXT   Additional PII needle to match (repeatable)
       --no-email      Disable email regex detection
-      --mode MODE     safe, balanced, or fast (default: balanced)
+      --mode MODE     paranoid, safe, balanced, or fast (default: balanced)
       --fps N         Override mode detection rate
       --accurate      Use accurate Vision OCR (slower)
       --min-text-height N

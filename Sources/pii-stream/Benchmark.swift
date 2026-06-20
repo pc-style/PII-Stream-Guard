@@ -54,7 +54,7 @@ final class BenchmarkRunner {
     }
 
     func run() async throws -> BenchmarkSummary {
-        let capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] in
+        let capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] _ in
             self?.capturedFrames += 1
         }
         try await capture.start()

@@ -51,7 +51,8 @@ final class PreviewRecorder {
         boxes: [PIIBox],
         maskMode: MaskMode,
         guardMode: GuardMode,
-        isArmed: Bool
+        isArmed: Bool,
+        blackoutWholeFrame: Bool
     ) {
         guard metadataHandle != nil else { return }
         let now = ProcessInfo.processInfo.systemUptime
@@ -75,11 +76,18 @@ final class PreviewRecorder {
         CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
         guard let output = pixelBuffer else { return }
 
-        render(sample.pixelBuffer, into: output, boxes: boxes, maskMode: maskMode)
+        render(sample.pixelBuffer, into: output, boxes: boxes, maskMode: maskMode, blackoutWholeFrame: blackoutWholeFrame)
         let time = CMTime(value: frameIndex, timescale: 30)
         if adaptor.append(output, withPresentationTime: time) {
             frameIndex += 1
-            writeMetadata(sample: sample, boxes: boxes, maskMode: maskMode, guardMode: guardMode, isArmed: isArmed)
+            writeMetadata(
+                sample: sample,
+                boxes: boxes,
+                maskMode: maskMode,
+                guardMode: guardMode,
+                isArmed: isArmed,
+                blackoutWholeFrame: blackoutWholeFrame
+            )
         }
     }
 
@@ -122,7 +130,13 @@ final class PreviewRecorder {
         frameIndex = 0
     }
 
-    private func render(_ source: CVPixelBuffer, into output: CVPixelBuffer, boxes: [PIIBox], maskMode: MaskMode) {
+    private func render(
+        _ source: CVPixelBuffer,
+        into output: CVPixelBuffer,
+        boxes: [PIIBox],
+        maskMode: MaskMode,
+        blackoutWholeFrame: Bool
+    ) {
         let image = CIImage(cvPixelBuffer: source)
         ciContext.render(image, to: output)
 
@@ -144,6 +158,12 @@ final class PreviewRecorder {
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return }
 
+        if blackoutWholeFrame {
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            return
+        }
+
         for box in boxes {
             let rect = pixelRect(from: box.normalizedRect, width: CGFloat(width), height: CGFloat(height))
             switch maskMode {
@@ -163,7 +183,8 @@ final class PreviewRecorder {
         boxes: [PIIBox],
         maskMode: MaskMode,
         guardMode: GuardMode,
-        isArmed: Bool
+        isArmed: Bool,
+        blackoutWholeFrame: Bool
     ) {
         let payload: [String: Any] = [
             "displayedAt": ProcessInfo.processInfo.systemUptime,
@@ -171,6 +192,7 @@ final class PreviewRecorder {
             "guardMode": guardMode.rawValue,
             "maskMode": maskMode.rawValue,
             "armed": isArmed,
+            "blackoutWholeFrame": blackoutWholeFrame,
             "boxes": boxes.map { box in
                 [
                     "kind": box.kind.rawValue,

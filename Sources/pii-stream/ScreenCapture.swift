@@ -6,10 +6,10 @@ import ScreenCaptureKit
 
 final class ScreenCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private let frameStore: FrameStore
-    private let onFrame: (() -> Void)?
+    private let onFrame: ((FrameSample) -> Void)?
     private var stream: SCStream?
 
-    init(frameStore: FrameStore, onFrame: (() -> Void)? = nil) {
+    init(frameStore: FrameStore, onFrame: ((FrameSample) -> Void)? = nil) {
         self.frameStore = frameStore
         self.onFrame = onFrame
         super.init()
@@ -54,8 +54,8 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         guard let copy = PixelBufferUtils.copy(buffer) else { return }
-        frameStore.update(copy)
-        onFrame?()
+        let sample = frameStore.update(copy)
+        onFrame?(sample)
     }
 }
 
