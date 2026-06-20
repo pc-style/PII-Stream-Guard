@@ -41,7 +41,7 @@ struct BenchmarkResult: Codable {
     let latencyP95MS: Double?
     let latencyAverageMS: Double?
     let hitCount: Int
-    let matchedStrings: [String]
+    let matchedKinds: [String]
 }
 
 final class BenchmarkRunner {
@@ -138,7 +138,7 @@ final class BenchmarkRunner {
 
         var latencies: [Double] = []
         var hitCount = 0
-        var matches = Set<String>()
+        var matchedKinds = Set<String>()
 
         for frame in frames {
             let start = DispatchTime.now().uptimeNanoseconds
@@ -147,7 +147,7 @@ final class BenchmarkRunner {
             latencies.append(Double(end - start) / 1_000_000)
             hitCount += boxes.count
             for box in boxes {
-                matches.insert(box.matched)
+                matchedKinds.insert(box.kind.rawValue)
             }
         }
 
@@ -161,12 +161,12 @@ final class BenchmarkRunner {
             latencyP95MS: percentile(latencies, 0.95),
             latencyAverageMS: average(latencies),
             hitCount: hitCount,
-            matchedStrings: matches.sorted()
+            matchedKinds: matchedKinds.sorted()
         )
     }
 
     private func csv(_ summary: BenchmarkSummary) -> String {
-        var lines = ["accurate,maxPixelSize,minimumTextHeight,enhanceLowContrast,frames,latencyP50MS,latencyP95MS,latencyAverageMS,hitCount,matchedStrings"]
+        var lines = ["accurate,maxPixelSize,minimumTextHeight,enhanceLowContrast,frames,latencyP50MS,latencyP95MS,latencyAverageMS,hitCount,matchedKinds"]
         for result in summary.results {
             lines.append([
                 result.accurate ? "true" : "false",
@@ -178,7 +178,7 @@ final class BenchmarkRunner {
                 formatNumber(result.latencyP95MS),
                 formatNumber(result.latencyAverageMS),
                 String(result.hitCount),
-                csvEscape(result.matchedStrings.joined(separator: "|")),
+                csvEscape(result.matchedKinds.joined(separator: "|")),
             ].joined(separator: ","))
         }
         return lines.joined(separator: "\n") + "\n"

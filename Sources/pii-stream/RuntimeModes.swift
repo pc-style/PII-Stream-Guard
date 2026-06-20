@@ -79,17 +79,40 @@ enum GuardMode: String, CaseIterable {
 
     var detectionFPS: Double {
         switch self {
-        case .paranoid: return 0
+        case .paranoid: return 8
         case .safe: return 5
-        case .balanced: return 0
+        case .balanced: return 12
         case .fast: return 12
-        case .expLow: return 0
-        case .expHigh: return 0
+        case .expLow: return 12
+        case .expHigh: return 8
         }
     }
 
     var detectsEveryFrame: Bool {
         detectionFPS <= 0
+    }
+
+    var armingTTL: TimeInterval {
+        switch self {
+        case .fast:
+            return 0.45
+        case .balanced:
+            return renderDelay + 0.35
+        case .safe:
+            return renderDelay + 0.50
+        case .paranoid:
+            return renderDelay + 0.75
+        case .expLow, .expHigh:
+            return renderDelay + 0.50
+        }
+    }
+
+    var maxSnapshotAge: TimeInterval {
+        max(renderDelay + 0.35, armingTTL)
+    }
+
+    var maxDetectionInputAge: TimeInterval {
+        max(renderDelay + 0.25, 0.50)
     }
 }
 
@@ -112,6 +135,7 @@ final class GuardStateMachine {
     private var previousDetectionBoxes: [PIIBox] = []
     private var consecutiveSimilarDetections = 0
     private var misses = 0
+    private var armedUntil: TimeInterval = 0
 
     init(mode: GuardMode) {
         self.mode = mode
@@ -125,56 +149,53 @@ final class GuardStateMachine {
         previousDetectionBoxes = []
         consecutiveSimilarDetections = 0
         misses = 0
+        armedUntil = 0
     }
 
-    func ingest(detected boxes: [PIIBox]) -> GuardStateSnapshot {
+    func ingest(detected boxes: [PIIBox], at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> GuardStateSnapshot {
         switch mode {
         case .paranoid:
-            return ingestParanoid(boxes)
+            return ingestParanoid(boxes, at: now)
         case .safe:
-            return ingestSafe(boxes)
+            return ingestSafe(boxes, at: now)
         case .balanced:
-            return ingestBalanced(boxes)
+            return ingestBalanced(boxes, at: now)
         case .fast:
-            return ingestFast(boxes)
+            return ingestFast(boxes, at: now)
         case .expLow, .expHigh:
-            return ingestExperimental(boxes)
+            return ingestExperimental(boxes, at: now)
         }
     }
 
-    private func ingestParanoid(_ boxes: [PIIBox]) -> GuardStateSnapshot {
+    private func ingestParanoid(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
-            if misses >= 25 {
+            if shouldDisarm(at: now, missLimit: 25) {
                 disarm()
             }
         } else {
-            isArmed = true
-            misses = 0
-            armedBoxes = boxes
+            arm(with: boxes, at: now)
         }
         return snapshot()
     }
 
-    private func ingestSafe(_ boxes: [PIIBox]) -> GuardStateSnapshot {
+    private func ingestSafe(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
-            if misses >= 25 {
+            if shouldDisarm(at: now, missLimit: 25) {
                 disarm()
             }
         } else {
-            isArmed = true
-            misses = 0
-            armedBoxes = boxes
+            arm(with: boxes, at: now)
         }
         return snapshot()
     }
 
-    private func ingestBalanced(_ boxes: [PIIBox]) -> GuardStateSnapshot {
+    private func ingestBalanced(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
             consecutiveSimilarDetections = 0
-            if misses >= 15 {
+            if shouldDisarm(at: now, missLimit: 15) {
                 disarm()
             }
         } else {
@@ -186,35 +207,44 @@ final class GuardStateMachine {
             }
             previousDetectionBoxes = boxes
 
-            if consecutiveSimilarDetections >= 2 {
-                isArmed = true
-                armedBoxes = boxes
-            } else if isArmed {
-                armedBoxes = boxes
-            }
+            arm(with: boxes, at: now)
         }
         return snapshot()
     }
 
-    private func ingestFast(_ boxes: [PIIBox]) -> GuardStateSnapshot {
+    private func ingestFast(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         if boxes.isEmpty {
             misses += 1
-            if misses >= 3 {
+            if shouldDisarm(at: now, missLimit: 3) {
                 disarm()
             }
         } else {
-            isArmed = true
-            misses = 0
-            armedBoxes = boxes
+            arm(with: boxes, at: now)
         }
         return snapshot()
     }
 
-    private func ingestExperimental(_ boxes: [PIIBox]) -> GuardStateSnapshot {
-        isArmed = !boxes.isEmpty
-        armedBoxes = boxes
+    private func ingestExperimental(_ boxes: [PIIBox], at now: TimeInterval) -> GuardStateSnapshot {
         misses = boxes.isEmpty ? misses + 1 : 0
+        if boxes.isEmpty {
+            if shouldDisarm(at: now, missLimit: 2) {
+                disarm()
+            }
+        } else {
+            arm(with: boxes, at: now)
+        }
         return snapshot()
+    }
+
+    private func arm(with boxes: [PIIBox], at now: TimeInterval) {
+        isArmed = true
+        misses = 0
+        armedBoxes = boxes
+        armedUntil = now + mode.armingTTL
+    }
+
+    private func shouldDisarm(at now: TimeInterval, missLimit: Int) -> Bool {
+        misses >= missLimit && now >= armedUntil
     }
 
     private func disarm() {
@@ -223,6 +253,7 @@ final class GuardStateMachine {
         previousDetectionBoxes = []
         consecutiveSimilarDetections = 0
         misses = 0
+        armedUntil = 0
     }
 
     private func snapshot() -> GuardStateSnapshot {

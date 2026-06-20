@@ -201,6 +201,7 @@ final class PreviewRecorder {
         blackoutWholeFrame: Bool
     ) {
         let payload: [String: Any] = [
+            "frameID": sample.id,
             "displayedAt": ProcessInfo.processInfo.systemUptime,
             "frameCapturedAt": sample.capturedAt,
             "guardMode": guardMode.rawValue,
@@ -210,7 +211,7 @@ final class PreviewRecorder {
             "boxes": boxes.map { box in
                 [
                     "kind": box.kind.rawValue,
-                    "matched": box.matched,
+                    "matchedLength": box.matched.count,
                     "confidence": box.confidence,
                     "rect": [
                         "x": box.normalizedRect.origin.x,
@@ -245,9 +246,7 @@ final class PreviewRecorder {
 
     private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
         switch mode {
-        case .expLow, .expHigh:
-            return false
-        case .paranoid, .safe, .balanced, .fast:
+        case .expLow, .expHigh, .paranoid, .safe, .balanced, .fast:
             return true
         }
     }

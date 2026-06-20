@@ -28,6 +28,16 @@ final class BoxStore {
         return snapshots.last(where: { $0.capturedAt <= capturedAt }) ?? .empty
     }
 
+    func snapshot(for sample: FrameSample, maxAge: TimeInterval) -> DetectionSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let snapshot = snapshots.last(where: { $0.frameID <= sample.id && $0.capturedAt <= sample.capturedAt }),
+              sample.capturedAt - snapshot.capturedAt <= maxAge else {
+            return nil
+        }
+        return snapshot
+    }
+
     func aggregate(from start: TimeInterval, through end: TimeInterval, fallbackAt capturedAt: TimeInterval) -> DetectionSnapshot {
         lock.lock()
         defer { lock.unlock() }
@@ -41,14 +51,17 @@ final class BoxStore {
             snapshot.capturedAt >= start && snapshot.capturedAt <= end
         }
         let boxes = window.flatMap(\.boxes)
+        let blackoutWholeFrame = window.contains { $0.blackoutWholeFrame }
+        let armed = blackoutWholeFrame || window.contains { $0.armed } || !boxes.isEmpty
 
         return DetectionSnapshot(
+            frameID: own.frameID,
             boxes: boxes,
             frameSize: own.frameSize,
             capturedAt: own.capturedAt,
             guardMode: own.guardMode,
-            armed: !boxes.isEmpty,
-            blackoutWholeFrame: false
+            armed: armed,
+            blackoutWholeFrame: blackoutWholeFrame
         )
     }
 }
@@ -57,6 +70,7 @@ final class FrameStore {
     private let lock = NSLock()
     private var samples: [FrameSample] = []
     private let maxSamples = 240
+    private var nextFrameID: UInt64 = 1
 
     @discardableResult
     func update(_ buffer: CVPixelBuffer) -> FrameSample {
@@ -64,10 +78,12 @@ final class FrameStore {
         defer { lock.unlock() }
         let frameSize = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
         let sample = FrameSample(
+            id: nextFrameID,
             pixelBuffer: buffer,
             capturedAt: ProcessInfo.processInfo.systemUptime,
             frameSize: frameSize
         )
+        nextFrameID &+= 1
         samples.append(sample)
         if samples.count > maxSamples {
             samples.removeFirst(samples.count - maxSamples)
@@ -91,6 +107,6 @@ final class FrameStore {
     func sample(atOrBefore capturedAt: TimeInterval) -> FrameSample? {
         lock.lock()
         defer { lock.unlock() }
-        return samples.last(where: { $0.capturedAt <= capturedAt }) ?? samples.first
+        return samples.last(where: { $0.capturedAt <= capturedAt })
     }
 }

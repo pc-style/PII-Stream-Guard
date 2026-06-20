@@ -110,7 +110,7 @@ final class PreviewView: NSView {
 
             guard maskMode == .boundingBox else { continue }
             let label = CATextLayer()
-            label.string = "\(box.kind.rawValue): \(box.matched)"
+            label.string = "\(box.kind.rawValue) detected"
             label.fontSize = 11
             label.foregroundColor = NSColor.white.cgColor
             label.backgroundColor = NSColor.systemRed.withAlphaComponent(0.85).cgColor
@@ -171,6 +171,7 @@ final class PreviewWindowController: NSWindowController {
             defer: false
         )
         window.title = "PII-Stream Preview"
+        window.sharingType = .none
         window.contentView = NSView()
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -206,17 +207,15 @@ final class PreviewWindowController: NSWindowController {
     private func tick() {
         let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
         guard let sample = frameStore.sample(atOrBefore: targetTime) else { return }
-        let snapshot: DetectionSnapshot
-        if guardMode.experimentalTraceBackDuration > 0 {
-            let traceEnd = sample.capturedAt + guardMode.renderDelay
-            snapshot = boxStore.aggregate(
-                from: traceEnd - guardMode.experimentalTraceBackDuration,
-                through: traceEnd,
-                fallbackAt: sample.capturedAt
-            )
-        } else {
-            snapshot = boxStore.snapshot(atOrBefore: sample.capturedAt)
-        }
+        let snapshot = boxStore.snapshot(for: sample, maxAge: guardMode.maxSnapshotAge) ?? DetectionSnapshot(
+            frameID: sample.id,
+            boxes: [],
+            frameSize: sample.frameSize,
+            capturedAt: sample.capturedAt,
+            guardMode: guardMode,
+            armed: true,
+            blackoutWholeFrame: true
+        )
         previewView.updateFrame(sample.pixelBuffer)
         previewView.updateOverlay(
             boxes: snapshot.boxes,
@@ -314,7 +313,7 @@ final class PreviewWindowController: NSWindowController {
     private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
         switch mode {
         case .expLow, .expHigh:
-            return false
+            return true
         case .paranoid, .safe, .balanced, .fast:
             return true
         }
@@ -337,6 +336,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     private let detectionStateLock = NSLock()
     private var detectionInFlight = false
     private var pendingDetectionSample: FrameSample?
+    private var newestAcceptedFrameID: UInt64 = 0
 
     init(options: WatchOptions) {
         self.options = options
@@ -377,13 +377,6 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleDetectionIfNeeded(sample: FrameSample) {
-        if usesLegacyDetectionScheduling(for: guardMode) {
-            detectionQueue.async { [weak self] in
-                self?.detect(sample: sample)
-            }
-            return
-        }
-
         detectionStateLock.lock()
         if detectionInFlight {
             pendingDetectionSample = sample
@@ -397,7 +390,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             guard let self else { return }
             var sampleToProcess: FrameSample? = sample
             while let current = sampleToProcess {
-                if self.shouldStartDetectionNow() {
+                let age = ProcessInfo.processInfo.systemUptime - current.capturedAt
+                if age <= self.guardMode.maxDetectionInputAge, self.shouldStartDetectionNow() {
                     self.lastDetectionTime = ProcessInfo.processInfo.systemUptime
                     self.detect(sample: current)
                 }
@@ -421,9 +415,13 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     private func detect(sample: FrameSample) {
+        guard sample.id > newestAcceptedFrameID else { return }
         let boxes = detector.detect(in: sample.pixelBuffer)
+        guard sample.id > newestAcceptedFrameID else { return }
+        newestAcceptedFrameID = sample.id
         let guardSnapshot = guardState.ingest(detected: boxes)
         boxStore.update(DetectionSnapshot(
+            frameID: sample.id,
             boxes: guardSnapshot.boxes,
             frameSize: sample.frameSize,
             capturedAt: sample.capturedAt,
@@ -431,22 +429,13 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             armed: guardSnapshot.active,
             blackoutWholeFrame: guardSnapshot.blackoutWholeFrame
         ))
-        logDetections(boxes, guardSnapshot: guardSnapshot)
-    }
-
-    private func usesLegacyDetectionScheduling(for mode: GuardMode) -> Bool {
-        switch mode {
-        case .expLow, .expHigh:
-            return true
-        case .paranoid, .safe, .balanced, .fast:
-            return false
-        }
+        logDetections(boxes, frameID: sample.id, guardSnapshot: guardSnapshot)
     }
 
     private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
         switch mode {
         case .expLow, .expHigh:
-            return false
+            return true
         case .paranoid, .safe, .balanced, .fast:
             return true
         }
@@ -459,6 +448,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             self.guardState.setMode(mode)
             self.detector = AppCoordinator.makeDetector(options: self.options, mode: mode)
             self.lastDetectionTime = 0
+            self.newestAcceptedFrameID = 0
             self.detectionStateLock.lock()
             self.detectionInFlight = false
             self.pendingDetectionSample = nil
@@ -478,20 +468,23 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func logDetections(_ boxes: [PIIBox], guardSnapshot: GuardStateSnapshot) {
+    private func logDetections(_ boxes: [PIIBox], frameID: UInt64, guardSnapshot: GuardStateSnapshot) {
         guard !boxes.isEmpty else {
             lastLoggedSignature = ""
             return
         }
-        let signature = boxes.map { "\($0.kind.rawValue):\($0.matched)" }.sorted().joined(separator: "|")
+        let signature = boxes.map {
+            "\($0.kind.rawValue):len:\($0.matched.count):rect:\(rectBucket(for: $0.normalizedRect))"
+        }.sorted().joined(separator: "|")
             + "|\(guardSnapshot.mode.rawValue)|armed:\(guardSnapshot.active)"
         guard signature != lastLoggedSignature else { return }
         lastLoggedSignature = signature
 
         for box in boxes {
             let payload: [String: Any] = [
+                "frameID": frameID,
                 "kind": box.kind.rawValue,
-                "matched": box.matched,
+                "matchedLength": box.matched.count,
                 "confidence": box.confidence,
                 "detectedAt": box.detectedAt,
                 "guardMode": guardSnapshot.mode.rawValue,
@@ -508,6 +501,14 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
                 print(line)
             }
         }
+    }
+
+    private func rectBucket(for rect: CGRect) -> String {
+        let x = Int((rect.origin.x * 1000).rounded())
+        let y = Int((rect.origin.y * 1000).rounded())
+        let width = Int((rect.width * 1000).rounded())
+        let height = Int((rect.height * 1000).rounded())
+        return "\(x),\(y),\(width),\(height)"
     }
 }
 

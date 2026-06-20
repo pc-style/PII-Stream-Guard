@@ -22,7 +22,17 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
             throw CaptureError.noDisplay
         }
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let currentBundleIdentifier = Bundle.main.bundleIdentifier
+        let excludedApplications = content.applications.filter { application in
+            application.processID == currentPID
+                || (currentBundleIdentifier != nil && application.bundleIdentifier == currentBundleIdentifier)
+        }
+        let filter = SCContentFilter(
+            display: display,
+            excludingApplications: excludedApplications,
+            exceptingWindows: []
+        )
         let config = SCStreamConfiguration()
         config.width = display.width
         config.height = display.height
@@ -38,6 +48,7 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
         fputs(
             "Screen capture started (\(display.width)×\(display.height)). "
+                + "Excluded \(excludedApplications.count) app(s) from capture. "
                 + "Grant Screen Recording in System Settings if no frames appear.\n",
             stderr
         )

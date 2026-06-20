@@ -16,6 +16,7 @@ struct PIIBox: Codable {
 }
 
 struct DetectionSnapshot {
+    let frameID: UInt64
     let boxes: [PIIBox]
     let frameSize: CGSize
     let capturedAt: TimeInterval
@@ -24,6 +25,7 @@ struct DetectionSnapshot {
     let blackoutWholeFrame: Bool
 
     static let empty = DetectionSnapshot(
+        frameID: 0,
         boxes: [],
         frameSize: .zero,
         capturedAt: 0,
@@ -34,6 +36,7 @@ struct DetectionSnapshot {
 }
 
 struct FrameSample {
+    let id: UInt64
     let pixelBuffer: CVPixelBuffer
     let capturedAt: TimeInterval
     let frameSize: CGSize
