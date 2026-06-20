@@ -1,132 +1,151 @@
 ---
 import Layout from "../layouts/Layout.astro";
 
-const title = "PII Stream Guard - live privacy preview for screen sharing";
+const title = "PII Stream Guard - live redaction for screen sharing";
 const description =
-  "A live privacy preview for screen sharing. Apple Vision OCR finds the emails, phone numbers, and secrets on your display, then boxes or blacks them out before they reach the stream. macOS, open source, runs locally.";
+  "A live privacy preview for screen sharing on macOS. Apple Vision OCR finds the emails, phone numbers, and secrets on your screen and redacts them before they reach the stream. Open source, runs locally.";
+
+// Words that cycle through the redaction slot in the headline.
+const exposed = ["your email", "your number", "an api key", "a password", "a client"];
 
 const leaks = [
   {
-    kind: "stream",
-    name: "the stream",
-    desc: "you go live for two hours and your email sits in the corner of the frame the whole time. <b>by the end it belongs to everyone watching.</b>",
+    tag: "the stream",
+    name: "two hours, one corner",
+    desc: "your email sits in the corner of the frame for a whole live session. <b>by the end it belongs to everyone watching.</b>",
   },
   {
-    kind: "demo",
-    name: "the client demo",
-    desc: "screen-sharing with a client and your personal gmail is right there in the tab bar. <b>the room notices before you do.</b>",
+    tag: "the demo",
+    name: "the tab bar tell",
+    desc: "you screen-share with a client and your personal gmail is right there in the tab bar. <b>the room notices before you do.</b>",
   },
   {
-    kind: "recording",
-    name: "the recording",
-    desc: "a customer's phone number is visible for fourteen minutes of your tutorial. <b>you find out after it is published.</b>",
+    tag: "the recording",
+    name: "fourteen minutes",
+    desc: "a customer's phone number is visible for fourteen minutes of a tutorial. <b>you find out after it ships.</b>",
   },
   {
-    kind: "handoff",
-    name: "the handoff",
-    desc: "you share a log with an internal string in it. <b>it is now in three slack channels you do not own.</b>",
+    tag: "the handoff",
+    name: "the pasted log",
+    desc: "you share a log with an internal token in it. <b>it is now in three slack channels you do not own.</b>",
   },
 ];
 
 const steps = [
-  { n: "01", name: "capture", impl: "ScreenCaptureKit", p: "the main display is captured to a pixel buffer continuously. capture never blocks on ocr." },
+  { n: "01", name: "capture", impl: "ScreenCaptureKit", p: "the main display streams to a pixel buffer continuously. capture never blocks on detection." },
   { n: "02", name: "throttle", impl: "background queue", p: "frames are downscaled and ocr runs five to ten times a second, off the hot path." },
   { n: "03", name: "detect", impl: "Vision OCR", p: "email regex and custom needles run against recognized text, producing per-substring boxes." },
-  { n: "04", name: "store", impl: "PIIBox matches", p: "a thread-safe snapshot holds the latest boxes, so the preview never waits on detection." },
-  { n: "05", name: "render", impl: "protected preview", p: "the delayed frame is drawn with boxes or blackout over anything that matched." },
+  { n: "04", name: "store", impl: "PIIBox snapshot", p: "a thread-safe snapshot holds the latest boxes, so the preview never waits on detection." },
+  { n: "05", name: "redact", impl: "protected preview", p: "the delayed frame is drawn with boxes or a blackout over anything that matched." },
 ];
 
 const modes = [
-  { name: "lockdown", who: "most cautious", p: "accurate ocr, a longer delay buffer, and blackouts while armed. for demos and recordings you cannot re-shoot.", tags: ["accurate ocr", "blackout", "enhance low contrast"], def: false },
-  { name: "standard", who: "balanced", p: "fast ocr, a modest delay, and boxes by default. the one you reach for most days.", tags: ["fast ocr", "boxes"], def: true },
-  { name: "low-latency", who: "responsive", p: "lower delay and a faster cadence. for live walkthroughs where the preview should track your hands.", tags: ["lowest delay", "faster cadence"], def: false },
+  { name: "lockdown", who: "most cautious", p: "accurate ocr, a longer delay buffer, and full blackouts while armed. for demos and recordings you cannot re-shoot.", chips: ["accurate ocr", "blackout", "enhance contrast"], def: false },
+  { name: "standard", who: "balanced", p: "fast ocr, a modest delay, and boxes by default. the one you reach for most days.", chips: ["fast ocr", "boxes"], def: true },
+  { name: "low-latency", who: "responsive", p: "lower delay and a faster cadence. for live walkthroughs where the preview should track your hands.", chips: ["lowest delay", "faster cadence"], def: false },
 ];
 
 const topo = [
   { name: "local", who: "one mac", p: "the same machine captures the screen, runs ocr, and renders the protected preview. no network, no trust surface." },
-  { name: "remote", who: "client and server", p: "a client mac captures frames and sends them to a processing server over a token-authenticated websocket. if the remote path fails, the client fails closed with a black frame." },
+  { name: "remote", who: "client + server", p: "a client mac captures frames and sends them to a processing server over a token-authenticated websocket. if the remote path fails, the client fails closed with a black frame." },
 ];
 
 const cmds = [
   { label: "one-line installer", code: "./scripts/setup.sh" },
   { label: "build from source", code: "swift build -c release\n.build/release/pii-stream watch --mode standard" },
-  { label: "remote / server + client", code: 'pii-stream serve --host 0.0.0.0 --port 8765 \\\n  --token "replace-with-a-long-random-token"\n\npii-stream watch --remote SERVER:8765 \\\n  --token "replace-with-a-long-random-token" --mode standard' },
-  { label: "scan a static image", code: "pii-stream detect-image --image ./screenshot.png --json" },
+  { label: "server + client", code: 'pii-stream serve --host 0.0.0.0 --port 8765 \\\n  --token "a-long-random-token"\n\npii-stream watch --remote SERVER:8765 \\\n  --token "a-long-random-token" --mode standard' },
+  { label: "scan a static image", code: "pii-stream detect-image --image ./shot.png --json" },
 ];
 ---
 
 <Layout title={title} description={description}>
   <header>
-    <p class="prompt-line"><span class="ok">➜</span> pii-stream watch --mode standard</p>
-    <h1>your screen is leaking. guard it before they see.<span class="cursor"></span></h1>
+    <span class="stamp">classified // until you ship it</span>
+    <h1>
+      stop showing<br />
+      <span class="redact" id="slot" aria-live="polite" data-words={JSON.stringify(exposed)}>your email</span><br />
+      on stream.
+    </h1>
     <p class="sub">
       a live privacy preview for screen sharing. apple vision ocr finds the
-      <em>emails, phone numbers, and secrets</em> on your display, then boxes or
-      blacks them out before they reach the stream.
+      emails, phone numbers, and secrets on your display, then
+      <b>redacts them before they ever reach the stream.</b>
     </p>
-    <a class="hero-cta" href="#install">install &rarr;</a>
-    <a class="source-link" href="https://github.com/pc-style/pii-stream-guard">view source</a>
-    <div class="avail"><span class="dot"></span> open source &middot; macOS 14+ &middot; apple vision ocr</div>
+    <div class="actions">
+      <a class="btn primary" href="#install">read the manual ↓</a>
+      <a class="btn ghost" href="https://github.com/pc-style/pii-stream-guard">source</a>
+    </div>
+    <div class="meta-line">
+      <span>macos 14+</span><span class="sep">/</span>
+      <span>open source</span><span class="sep">/</span>
+      <span>apple vision ocr</span><span class="sep">/</span>
+      <span>runs locally</span>
+    </div>
 
-    <div class="guard" data-rv="rise" aria-label="live demo: guard boxes drawn over a detected email, phone, and custom string">
-      <div class="guard-bar">
-        <span class="dots"><i></i><i></i><i></i></span>
-        <span class="addr">guard window / preview</span>
-        <span class="live">LIVE</span>
+    <div class="transcript" data-rv aria-label="live demo: a chat transcript with detected email, phone, and custom string redacted">
+      <div class="bar">
+        <span>guard preview</span>
+        <span class="live">recording</span>
       </div>
-      <div class="guard-screen">
-        <div class="msg"><div class="who">support</div><div class="b">account on file: <span class="pii">adam.krupa@gmail.com</span></div></div>
-        <div class="msg me"><div class="who">you</div><div class="b">call me back at <span class="pii">+1 (312) 847-1928</span> after 5.</div></div>
-        <div class="msg"><div class="who">support</div><div class="b">case ref <span class="pii">customer-4821</span></div></div>
-        <span class="box" data-i="0"><span class="lab">email</span></span>
-        <span class="box" data-i="1"><span class="lab">phone</span></span>
-        <span class="box" data-i="2"><span class="lab">needle</span></span>
+      <div class="body">
+        <div class="line">
+          <div class="who">support</div>
+          <div class="b">account on file: <span class="pii">adam.krupa@gmail.com<span class="cover"></span><span class="lab">email</span></span></div>
+        </div>
+        <div class="line">
+          <div class="who">you</div>
+          <div class="b">call me back at <span class="pii">+1 (312) 847-1928<span class="cover"></span><span class="lab">phone</span></span> after five.</div>
+        </div>
+        <div class="line">
+          <div class="who">support</div>
+          <div class="b">case ref <span class="pii">customer-4821<span class="cover"></span><span class="lab">needle</span></span></div>
+        </div>
       </div>
-      <div class="guard-foot">
-        <span>mode: standard &middot; 8 fps</span>
-        <span class="found">found <b>3</b> &middot; 2 blacked</span>
+      <div class="foot">
+        <span>mode: standard · 8 fps</span>
+        <span class="ct">redacted <b>3</b></span>
       </div>
     </div>
-    <p class="guard-cap">the guard window finds an email, a phone, and a custom string, and draws a box over each before the frame is shown.</p>
+    <p class="transcript-cap">apple vision finds an email, a phone number, and a custom string, then covers each before the frame is shown.</p>
   </header>
 
   <section id="leak">
-    <h2>the leak</h2>
-    <ul class="log">
+    <div class="mark"><span class="no">§ 01</span><h2>the exposure</h2></div>
+    <div class="ledger">
       {leaks.map((l) => (
-        <li data-rv="rise">
-          <span class="kind">{l.kind}</span>
+        <div class="row" data-rv>
+          <span class="tag">{l.tag}</span>
           <span>
             <span class="name">{l.name}</span>
             <span class="desc" set:html={l.desc} />
           </span>
-        </li>
+        </div>
       ))}
-    </ul>
+    </div>
   </section>
 
   <section id="fix">
-    <h2>the fix</h2>
-    <div class="callout" data-rv="rise">
-      <p class="principle">over-redact is safer than leak.</p>
+    <div class="mark"><span class="no">§ 02</span><h2>the countermeasure</h2></div>
+    <div class="directive" data-rv>
+      <p class="rule">over-redact is safer than leak.</p>
       <p>
         guard watches your screen, finds what looks like personal data, and
-        boxes or blacks it out on a delayed preview before it ever reaches the
-        stream. capture and detection are decoupled, so the preview never waits
-        on ocr. if the remote path fails, the client fails closed with a black
-        frame.
+        covers it on a delayed preview before it ever reaches the stream.
+        capture and detection are decoupled, so the preview never waits on ocr.
+        if anything in the pipeline breaks, the client fails closed with a
+        black frame.
       </p>
     </div>
   </section>
 
   <section id="how">
-    <h2>how it works</h2>
-    <div class="steps">
+    <div class="mark"><span class="no">§ 03</span><h2>the procedure</h2></div>
+    <div class="proc">
       {steps.map((s) => (
-        <div class="step" data-rv="rise">
+        <div class="step" data-rv>
           <span class="n">{s.n}</span>
           <div>
-            <span class="name">{s.name}</span><span class="impl">{s.impl}</span>
+            <div class="head"><span class="name">{s.name}</span><span class="impl">{s.impl}</span></div>
             <p>{s.p}</p>
           </div>
         </div>
@@ -135,40 +154,47 @@ const cmds = [
   </section>
 
   <section id="modes">
-    <h2>modes</h2>
-    {modes.map((m) => (
-      <div class="entry" data-rv="rise">
-        <span class="name">{m.name}</span><span class="who">{m.who}</span>
-        <p>{m.p}</p>
-        {m.def && <span class="tag default">default</span>}
-        {m.tags.map((t) => <span class="tag">{t}</span>)}
-      </div>
-    ))}
+    <div class="mark"><span class="no">§ 04</span><h2>operating modes</h2></div>
+    <div class="spec">
+      {modes.map((m) => (
+        <div class="item" data-rv>
+          <div class="top">
+            <span class="name">{m.name}</span>
+            <span class="who">{m.who}</span>
+            {m.def && <span class="badge">default</span>}
+          </div>
+          <p>{m.p}</p>
+          <div class="chips">{m.chips.map((c) => <span>{c}</span>)}</div>
+        </div>
+      ))}
+    </div>
   </section>
 
   <section id="topology">
-    <h2>topology</h2>
-    {topo.map((t) => (
-      <div class="entry" data-rv="rise">
-        <span class="name">{t.name}</span><span class="who">{t.who}</span>
-        <p>{t.p}</p>
-      </div>
-    ))}
+    <div class="mark"><span class="no">§ 05</span><h2>deployment</h2></div>
+    <div class="spec">
+      {topo.map((t) => (
+        <div class="item" data-rv>
+          <div class="top"><span class="name">{t.name}</span><span class="who">{t.who}</span></div>
+          <p>{t.p}</p>
+        </div>
+      ))}
+    </div>
   </section>
 
   <section id="install">
-    <h2>install</h2>
+    <div class="mark"><span class="no">§ 06</span><h2>field install</h2></div>
     <p class="lead">
-      macOS only. built with swiftpm, no xcode project. the interactive
+      macos only. built with swiftpm, no xcode project. the interactive
       installer builds the release binary and offers to start any mode.
     </p>
     <ul class="reqs">
       <li><b>macOS 14</b> or newer</li>
-      <li><b>SwiftPM</b> from xcode or command line tools</li>
+      <li><b>SwiftPM</b> from xcode or the command line tools</li>
       <li><b>Screen Recording</b> permission for your terminal</li>
     </ul>
     {cmds.map((c) => (
-      <div class="code">
+      <div class="term" data-rv>
         <div class="cap">
           <span class="label">{c.label}</span>
           <button class="copy" type="button">copy</button>
@@ -179,68 +205,101 @@ const cmds = [
   </section>
 
   <section id="safe">
-    <h2>the safe default</h2>
-    <p class="lead">
-      fails closed with a <em style="color:var(--fg);font-style:normal;border-bottom:1px solid var(--accent)">black frame</em>.
-      if anything in the pipeline breaks, you do not get a partial frame with
-      pii in it. you get black. the safe default is no picture.
-    </p>
+    <div class="mark"><span class="no">§ 07</span><h2>the safe default</h2></div>
+    <div class="directive" data-rv>
+      <p class="rule">when in doubt, show nothing.</p>
+      <p>
+        if anything in the pipeline breaks, you do not get a partial frame with
+        pii in it. you get a black frame. the safe default is no picture.
+      </p>
+    </div>
   </section>
 
   <Fragment slot="scripts">
     <script>
-      // ── guard demo: position bounding boxes over their pii targets ──
+      // ── headline redaction cycle ──
+      // The bar wipes over the word, then -- while fully covered -- the word
+      // swaps and the slot width transitions to the next word's width, so the
+      // box resizes smoothly behind the bar instead of snapping. Then it lifts.
       (function () {
-        const screenEl = document.querySelector(".guard-screen");
-        if (!screenEl) return;
-        const guard = screenEl.closest(".guard");
-        if (!guard) return;
-        const boxes = Array.prototype.slice.call(
-          guard.querySelectorAll(".box")
-        ) as HTMLElement[];
-        const targets = Array.prototype.slice.call(
-          guard.querySelectorAll(".pii")
-        ) as HTMLElement[];
+        const slot = document.getElementById("slot");
+        if (!slot) return;
+        const parsed = JSON.parse(slot.getAttribute("data-words") || "[]") as string[];
+        const list = parsed.length
+          ? parsed
+          : ["your email", "your number", "an api key", "a password", "a client"];
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-        function place() {
-          const sr = screenEl!.getBoundingClientRect();
-          boxes.forEach((b, i) => {
-            const t = targets[i];
-            if (!t) return;
-            const r = t.getBoundingClientRect();
-            b.style.left = (r.left - sr.left - 4) + "px";
-            b.style.top = (r.top - sr.top - 4) + "px";
-            b.style.width = (r.width + 8) + "px";
-            b.style.height = (r.height + 8) + "px";
-          });
-        }
-        place();
-        addEventListener("resize", place);
-        addEventListener("load", place);
-        if (document.fonts) document.fonts.ready.then(place);
+        // Measure each word's rendered width with a hidden clone.
+        const ghost = document.createElement("span");
+        const cs = getComputedStyle(slot);
+        Object.assign(ghost.style, {
+          position: "absolute",
+          visibility: "hidden",
+          whiteSpace: "nowrap",
+          font: cs.font,
+          fontWeight: cs.fontWeight,
+          fontSize: cs.fontSize,
+          fontFamily: cs.fontFamily,
+          letterSpacing: cs.letterSpacing,
+          padding: cs.padding,
+        });
+        document.body.appendChild(ghost);
+        const widthOf = (w: string) => {
+          ghost.textContent = w;
+          return Math.ceil(ghost.getBoundingClientRect().width);
+        };
 
-        const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-        if (reduce) {
-          boxes.forEach((b) => b.classList.add("on"));
-          return;
+        let i = 0;
+        const setWidth = () => { slot.style.width = widthOf(list[i]) + "px"; };
+        slot.textContent = list[0];
+        setWidth();
+        addEventListener("resize", setWidth);
+
+        const WIPE = 440; // matches CSS transition on the bar + width
+
+        function cycle() {
+          slot!.classList.add("clear"); // lift the bar -> reveal word
+          setTimeout(() => {
+            slot!.classList.remove("clear"); // bar wipes back over
+            setTimeout(() => {
+              // fully covered now: swap word + resize slot under the bar
+              i = (i + 1) % list.length;
+              slot!.textContent = list[i];
+              setWidth();
+            }, WIPE);
+          }, 1600);
         }
+        cycle();
+        setInterval(cycle, 1600 + WIPE * 2 + 400);
+      })();
+
+      // ── transcript: momentarily lift one redaction, then snap it back ──
+      (function () {
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        const piis = Array.prototype.slice.call(
+          document.querySelectorAll(".transcript .pii")
+        ) as HTMLElement[];
+        if (!piis.length) return;
         let k = 0;
-        function tick() {
-          boxes.forEach((b) => b.classList.remove("on"));
-          boxes[k]?.classList.add("on");
-          k = (k + 1) % boxes.length;
+        function peek() {
+          const el = piis[k];
+          if (el) {
+            el.classList.add("peek");
+            setTimeout(() => el.classList.remove("peek"), 750);
+          }
+          k = (k + 1) % piis.length;
         }
-        tick();
-        setInterval(tick, 1100);
+        setInterval(peek, 1900);
       })();
 
       // ── copy buttons ──
-      document.querySelectorAll(".code").forEach((block) => {
-        const blockEl = block as HTMLElement;
-        const btn = blockEl.querySelector<HTMLButtonElement>(".copy");
+      document.querySelectorAll(".term").forEach((block) => {
+        const el = block as HTMLElement;
+        const btn = el.querySelector<HTMLButtonElement>(".copy");
         if (!btn) return;
         btn.addEventListener("click", () => {
-          const code = blockEl.querySelector("code");
+          const code = el.querySelector("code");
           if (!code || !navigator.clipboard) return;
           navigator.clipboard.writeText(code.textContent ?? "").then(() => {
             btn.textContent = "copied";
@@ -253,46 +312,38 @@ const cmds = [
         });
       });
 
-      // ── minimal reveal ──
+      // ── reveal on scroll ──
       if (document.documentElement.classList.contains("fx")) {
-        const groups = [
-          "header .sub",
-          "header .hero-cta",
-          "header .source-link",
-          "header .avail",
-          ".guard",
-          ".guard-cap",
-          "section > h2",
-          ".log li",
-          ".callout",
-          ".step",
-          ".entry",
-          "#install .lead",
-          ".reqs li",
-          ".code",
-          "#safe .lead",
-        ];
-
         const io = new IntersectionObserver(
           (entries, obs) => {
             for (const e of entries) {
               if (!e.isIntersecting) continue;
-              e.target.classList.add("rv-in");
+              e.target.classList.add("in");
               obs.unobserve(e.target);
             }
           },
-          { threshold: 0.15, rootMargin: "0px 0px -8% 0px" }
+          { threshold: 0.12, rootMargin: "0px 0px -6% 0px" }
         );
-
-        for (const sel of groups) {
-          const nodes = Array.prototype.slice.call(
-            document.querySelectorAll(sel)
-          ) as HTMLElement[];
-          nodes.forEach((node, i) => {
-            node.style.setProperty("--i", String(nodes.length > 1 ? i : 0));
-            io.observe(node);
+        // stagger siblings within each section group
+        document.querySelectorAll<HTMLElement>(".ledger, .proc, .spec").forEach((group) => {
+          Array.from(group.querySelectorAll<HTMLElement>("[data-rv]")).forEach((n, i) => {
+            n.style.setProperty("--i", String(i));
           });
-        }
+        });
+        document.querySelectorAll<HTMLElement>("[data-rv]").forEach((node) => {
+          io.observe(node);
+        });
+
+        // Safety net: reveal anything already in view once loaded, so
+        // above-the-fold content never waits on an intersection event.
+        const revealInView = () => {
+          document.querySelectorAll<HTMLElement>("[data-rv]:not(.in)").forEach((n) => {
+            const r = n.getBoundingClientRect();
+            if (r.top < innerHeight && r.bottom > 0) n.classList.add("in");
+          });
+        };
+        revealInView();
+        addEventListener("load", () => setTimeout(revealInView, 200));
       }
     </script>
   </Fragment>
