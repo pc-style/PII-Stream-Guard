@@ -1,0 +1,13 @@
+{
+  "amp.amp.mcpServers": {
+    "aden": {
+      "command": "/Users/pcstyle/.local/bin/aden-mcp",
+      "args": [
+        "/Users/pcstyle/projects/00-Active/pii-guard"
+      ],
+      "env": {
+        "ADEN_BIN": "/Users/pcstyle/.local/bin/aden"
+      }
+    }
+  }
+}

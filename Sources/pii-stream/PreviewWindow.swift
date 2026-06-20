@@ -13,6 +13,7 @@ final class PreviewView: NSView {
     var frameSize: CGSize = .zero
     var maskMode: MaskMode = .boundingBox
     var blackoutWholeFrame = false
+    var usesBuiltInMasking = true
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -45,13 +46,20 @@ final class PreviewView: NSView {
         }
     }
 
-    func updateOverlay(boxes: [PIIBox], frameSize: CGSize, maskMode: MaskMode, blackoutWholeFrame: Bool) {
+    func updateOverlay(
+        boxes: [PIIBox],
+        frameSize: CGSize,
+        maskMode: MaskMode,
+        blackoutWholeFrame: Bool,
+        usesBuiltInMasking: Bool
+    ) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.boxes = boxes
             self.frameSize = frameSize
             self.maskMode = maskMode
             self.blackoutWholeFrame = blackoutWholeFrame
+            self.usesBuiltInMasking = usesBuiltInMasking
             self.redrawOverlay()
         }
     }
@@ -70,7 +78,7 @@ final class PreviewView: NSView {
 
         if blackoutWholeFrame {
             let blackoutLayer = CALayer()
-            blackoutLayer.frame = CGRect(x: offsetX, y: offsetY, width: drawnWidth, height: drawnHeight)
+            blackoutLayer.frame = viewBounds
             blackoutLayer.backgroundColor = NSColor.black.cgColor
             overlayLayer.addSublayer(blackoutLayer)
             return
@@ -78,12 +86,15 @@ final class PreviewView: NSView {
 
         for box in boxes {
             let rect = visionRectToView(box.normalizedRect, frameSize: frameSize)
-            let scaled = CGRect(
+            var scaled = CGRect(
                 x: offsetX + rect.origin.x * scale,
                 y: offsetY + rect.origin.y * scale,
                 width: rect.width * scale,
                 height: rect.height * scale
             )
+            if maskMode == .blackout, usesBuiltInMasking {
+                scaled = expandedBuiltInBlackoutRect(scaled, within: viewBounds)
+            }
 
             let boxLayer = CALayer()
             boxLayer.frame = scaled
@@ -117,6 +128,14 @@ final class PreviewView: NSView {
         let w = rect.width * frameSize.width
         let h = rect.height * frameSize.height
         return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    private func expandedBuiltInBlackoutRect(_ rect: CGRect, within bounds: CGRect) -> CGRect {
+        let horizontalPadding = max(80, rect.width * 0.45)
+        let verticalPadding = max(10, rect.height * 1.2)
+        return rect
+            .insetBy(dx: -horizontalPadding, dy: -verticalPadding)
+            .intersection(bounds)
     }
 }
 
@@ -187,13 +206,24 @@ final class PreviewWindowController: NSWindowController {
     private func tick() {
         let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
         guard let sample = frameStore.sample(atOrBefore: targetTime) else { return }
-        let snapshot = boxStore.current()
+        let snapshot: DetectionSnapshot
+        if guardMode.experimentalTraceBackDuration > 0 {
+            let traceEnd = sample.capturedAt + guardMode.renderDelay
+            snapshot = boxStore.aggregate(
+                from: traceEnd - guardMode.experimentalTraceBackDuration,
+                through: traceEnd,
+                fallbackAt: sample.capturedAt
+            )
+        } else {
+            snapshot = boxStore.snapshot(atOrBefore: sample.capturedAt)
+        }
         previewView.updateFrame(sample.pixelBuffer)
         previewView.updateOverlay(
             boxes: snapshot.boxes,
             frameSize: sample.frameSize,
             maskMode: maskMode,
-            blackoutWholeFrame: snapshot.blackoutWholeFrame
+            blackoutWholeFrame: snapshot.blackoutWholeFrame,
+            usesBuiltInMasking: usesBuiltInMasking(for: guardMode)
         )
 
         if isRecording {
@@ -280,6 +310,15 @@ final class PreviewWindowController: NSWindowController {
         guard !isRecording else { return }
         statusLabel.stringValue = "\(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  armed \(armed ? "yes" : "no")  boxes \(boxCount)"
     }
+
+    private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
+        switch mode {
+        case .expLow, .expHigh:
+            return false
+        case .paranoid, .safe, .balanced, .fast:
+            return true
+        }
+    }
 }
 
 final class AppCoordinator: NSObject, NSApplicationDelegate {
@@ -295,6 +334,9 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     private var guardMode: GuardMode
     private var lastDetectionTime: TimeInterval = 0
     private var lastLoggedSignature: String = ""
+    private let detectionStateLock = NSLock()
+    private var detectionInFlight = false
+    private var pendingDetectionSample: FrameSample?
 
     init(options: WatchOptions) {
         self.options = options
@@ -335,27 +377,78 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleDetectionIfNeeded(sample: FrameSample) {
+        if usesLegacyDetectionScheduling(for: guardMode) {
+            detectionQueue.async { [weak self] in
+                self?.detect(sample: sample)
+            }
+            return
+        }
+
+        detectionStateLock.lock()
+        if detectionInFlight {
+            pendingDetectionSample = sample
+            detectionStateLock.unlock()
+            return
+        }
+        detectionInFlight = true
+        detectionStateLock.unlock()
+
         detectionQueue.async { [weak self] in
             guard let self else { return }
-            let now = ProcessInfo.processInfo.systemUptime
-            let detectionFPS = self.options.fps ?? self.guardMode.detectionFPS
-            if detectionFPS > 0 {
-                let interval = 1.0 / detectionFPS
-                guard now - self.lastDetectionTime >= interval else { return }
-            }
-            self.lastDetectionTime = now
+            var sampleToProcess: FrameSample? = sample
+            while let current = sampleToProcess {
+                if self.shouldStartDetectionNow() {
+                    self.lastDetectionTime = ProcessInfo.processInfo.systemUptime
+                    self.detect(sample: current)
+                }
 
-            let boxes = self.detector.detect(in: sample.pixelBuffer)
-            let guardSnapshot = self.guardState.ingest(detected: boxes)
-            self.boxStore.update(DetectionSnapshot(
-                boxes: guardSnapshot.boxes,
-                frameSize: sample.frameSize,
-                capturedAt: sample.capturedAt,
-                guardMode: guardSnapshot.mode,
-                armed: guardSnapshot.active,
-                blackoutWholeFrame: guardSnapshot.blackoutWholeFrame
-            ))
-            self.logDetections(boxes, guardSnapshot: guardSnapshot)
+                self.detectionStateLock.lock()
+                sampleToProcess = self.pendingDetectionSample
+                self.pendingDetectionSample = nil
+                if sampleToProcess == nil {
+                    self.detectionInFlight = false
+                }
+                self.detectionStateLock.unlock()
+            }
+        }
+    }
+
+    private func shouldStartDetectionNow() -> Bool {
+        let detectionFPS = options.fps ?? guardMode.detectionFPS
+        guard detectionFPS > 0 else { return true }
+        let interval = 1.0 / detectionFPS
+        return ProcessInfo.processInfo.systemUptime - lastDetectionTime >= interval
+    }
+
+    private func detect(sample: FrameSample) {
+        let boxes = detector.detect(in: sample.pixelBuffer)
+        let guardSnapshot = guardState.ingest(detected: boxes)
+        boxStore.update(DetectionSnapshot(
+            boxes: guardSnapshot.boxes,
+            frameSize: sample.frameSize,
+            capturedAt: sample.capturedAt,
+            guardMode: guardSnapshot.mode,
+            armed: guardSnapshot.active,
+            blackoutWholeFrame: guardSnapshot.blackoutWholeFrame
+        ))
+        logDetections(boxes, guardSnapshot: guardSnapshot)
+    }
+
+    private func usesLegacyDetectionScheduling(for mode: GuardMode) -> Bool {
+        switch mode {
+        case .expLow, .expHigh:
+            return true
+        case .paranoid, .safe, .balanced, .fast:
+            return false
+        }
+    }
+
+    private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
+        switch mode {
+        case .expLow, .expHigh:
+            return false
+        case .paranoid, .safe, .balanced, .fast:
+            return true
         }
     }
 
@@ -366,6 +459,10 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             self.guardState.setMode(mode)
             self.detector = AppCoordinator.makeDetector(options: self.options, mode: mode)
             self.lastDetectionTime = 0
+            self.detectionStateLock.lock()
+            self.detectionInFlight = false
+            self.pendingDetectionSample = nil
+            self.detectionStateLock.unlock()
         }
     }
 
@@ -592,6 +689,10 @@ enum CLI {
             return .balanced
         case "fast", "fast-but-faulty", "fast_but_faulty":
             return .fast
+        case "exp-low", "exp_low", "explow":
+            return .expLow
+        case "exp-high", "exp_high", "exphigh":
+            return .expHigh
         default:
             return nil
         }
@@ -607,7 +708,7 @@ enum CLI {
     Watch options:
       --needle TEXT   Additional PII needle to match (repeatable)
       --no-email      Disable email regex detection
-      --mode MODE     paranoid, safe, balanced, or fast (default: balanced)
+      --mode MODE     paranoid, safe, balanced, fast, exp-low, or exp-high (default: balanced)
       --fps N         Override mode detection rate
       --accurate      Use accurate Vision OCR (slower)
       --min-text-height N

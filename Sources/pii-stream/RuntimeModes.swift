@@ -6,6 +6,8 @@ enum GuardMode: String, CaseIterable {
     case safe
     case balanced
     case fast
+    case expLow = "exp-low"
+    case expHigh = "exp-high"
 
     var title: String {
         switch self {
@@ -13,6 +15,8 @@ enum GuardMode: String, CaseIterable {
         case .safe: return "Safe"
         case .balanced: return "Balanced"
         case .fast: return "Fast but faulty"
+        case .expLow: return "Exp Low"
+        case .expHigh: return "Exp High"
         }
     }
 
@@ -22,6 +26,17 @@ enum GuardMode: String, CaseIterable {
         case .safe: return 2.50
         case .balanced: return 0.75
         case .fast: return 0
+        case .expLow: return 0.75
+        case .expHigh: return 0.75
+        }
+    }
+
+    var experimentalTraceBackDuration: TimeInterval {
+        switch self {
+        case .expLow, .expHigh:
+            return renderDelay + (5.0 / 60.0)
+        case .paranoid, .safe, .balanced, .fast:
+            return 0
         }
     }
 
@@ -55,6 +70,10 @@ enum GuardMode: String, CaseIterable {
                 minimumTextHeight: 0.012,
                 enhanceLowContrast: false
             )
+        case .expLow:
+            return GuardMode.balanced.detectorSettings
+        case .expHigh:
+            return GuardMode.safe.detectorSettings
         }
     }
 
@@ -64,6 +83,8 @@ enum GuardMode: String, CaseIterable {
         case .safe: return 5
         case .balanced: return 0
         case .fast: return 12
+        case .expLow: return 0
+        case .expHigh: return 0
         }
     }
 
@@ -116,6 +137,8 @@ final class GuardStateMachine {
             return ingestBalanced(boxes)
         case .fast:
             return ingestFast(boxes)
+        case .expLow, .expHigh:
+            return ingestExperimental(boxes)
         }
     }
 
@@ -184,6 +207,13 @@ final class GuardStateMachine {
             misses = 0
             armedBoxes = boxes
         }
+        return snapshot()
+    }
+
+    private func ingestExperimental(_ boxes: [PIIBox]) -> GuardStateSnapshot {
+        isArmed = !boxes.isEmpty
+        armedBoxes = boxes
+        misses = boxes.isEmpty ? misses + 1 : 0
         return snapshot()
     }
 

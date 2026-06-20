@@ -76,7 +76,14 @@ final class PreviewRecorder {
         CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
         guard let output = pixelBuffer else { return }
 
-        render(sample.pixelBuffer, into: output, boxes: boxes, maskMode: maskMode, blackoutWholeFrame: blackoutWholeFrame)
+        render(
+            sample.pixelBuffer,
+            into: output,
+            boxes: boxes,
+            maskMode: maskMode,
+            guardMode: guardMode,
+            blackoutWholeFrame: blackoutWholeFrame
+        )
         let time = CMTime(value: frameIndex, timescale: 30)
         if adaptor.append(output, withPresentationTime: time) {
             frameIndex += 1
@@ -135,6 +142,7 @@ final class PreviewRecorder {
         into output: CVPixelBuffer,
         boxes: [PIIBox],
         maskMode: MaskMode,
+        guardMode: GuardMode,
         blackoutWholeFrame: Bool
     ) {
         let image = CIImage(cvPixelBuffer: source)
@@ -165,7 +173,13 @@ final class PreviewRecorder {
         }
 
         for box in boxes {
-            let rect = pixelRect(from: box.normalizedRect, width: CGFloat(width), height: CGFloat(height))
+            var rect = pixelRect(from: box.normalizedRect, width: CGFloat(width), height: CGFloat(height))
+            if maskMode == .blackout, usesBuiltInMasking(for: guardMode) {
+                rect = expandedBuiltInBlackoutRect(
+                    rect,
+                    within: CGRect(x: 0, y: 0, width: width, height: height)
+                )
+            }
             switch maskMode {
             case .blackout:
                 context.setFillColor(CGColor(gray: 0, alpha: 1))
@@ -219,6 +233,23 @@ final class PreviewRecorder {
             width: rect.width * width,
             height: rect.height * height
         )
+    }
+
+    private func expandedBuiltInBlackoutRect(_ rect: CGRect, within bounds: CGRect) -> CGRect {
+        let horizontalPadding = max(80, rect.width * 0.45)
+        let verticalPadding = max(10, rect.height * 1.2)
+        return rect
+            .insetBy(dx: -horizontalPadding, dy: -verticalPadding)
+            .intersection(bounds)
+    }
+
+    private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
+        switch mode {
+        case .expLow, .expHigh:
+            return false
+        case .paranoid, .safe, .balanced, .fast:
+            return true
+        }
     }
 
     private func clear() {

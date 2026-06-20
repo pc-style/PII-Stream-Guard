@@ -27,6 +27,30 @@ final class BoxStore {
         defer { lock.unlock() }
         return snapshots.last(where: { $0.capturedAt <= capturedAt }) ?? .empty
     }
+
+    func aggregate(from start: TimeInterval, through end: TimeInterval, fallbackAt capturedAt: TimeInterval) -> DetectionSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !snapshots.isEmpty else {
+            return .empty
+        }
+
+        let own = snapshots.last(where: { $0.capturedAt <= capturedAt }) ?? snapshots[0]
+        let window = snapshots.filter { snapshot in
+            snapshot.capturedAt >= start && snapshot.capturedAt <= end
+        }
+        let boxes = window.flatMap(\.boxes)
+
+        return DetectionSnapshot(
+            boxes: boxes,
+            frameSize: own.frameSize,
+            capturedAt: own.capturedAt,
+            guardMode: own.guardMode,
+            armed: !boxes.isEmpty,
+            blackoutWholeFrame: false
+        )
+    }
 }
 
 final class FrameStore {
