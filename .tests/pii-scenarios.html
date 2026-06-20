@@ -433,6 +433,184 @@
     }
     .attendee-list .contact { font-family: var(--mono); font-size: 0.82rem; color: #1a73e8; }
 
+    /* --- Flow 6: Compositor geometry / scrolling torture test --- */
+    .geometry-test {
+      min-height: 620px;
+      background: #1f2329;
+      color: #f5f7fa;
+      font-family: var(--mono);
+      position: relative;
+      overflow: hidden;
+      border: 10px solid #ffcc00;
+    }
+
+    .geometry-corner {
+      position: absolute;
+      z-index: 3;
+      max-width: 44ch;
+      padding: 8px 10px;
+      border: 2px solid #ff5630;
+      background: rgba(255, 86, 48, 0.14);
+      color: #fff;
+      font-size: 14px;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+
+    .geometry-corner strong {
+      display: block;
+      color: #ffbdad;
+      font-family: var(--font);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .corner-tl { top: 12px; left: 12px; }
+    .corner-tr { top: 12px; right: 12px; text-align: right; }
+    .corner-bl { bottom: 12px; left: 12px; }
+    .corner-br { right: 12px; bottom: 12px; text-align: right; }
+
+    .edge-rulers {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(to right, rgba(255,255,255,0.11) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px);
+      background-size: 80px 80px;
+    }
+
+    .left-edge-strip,
+    .right-edge-strip {
+      position: absolute;
+      top: 110px;
+      bottom: 110px;
+      width: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 82, 204, 0.35);
+      border: 2px solid #4c9aff;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      font: 700 12px var(--font);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      z-index: 2;
+    }
+
+    .left-edge-strip { left: 0; }
+    .right-edge-strip { right: 0; }
+
+    .scroll-lab {
+      position: absolute;
+      left: 86px;
+      right: 86px;
+      top: 116px;
+      bottom: 96px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      z-index: 1;
+    }
+
+    .scroll-pane,
+    .moving-pane {
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 10px;
+      background: rgba(9, 30, 66, 0.58);
+      overflow: hidden;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.26);
+    }
+
+    .pane-title {
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.08);
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .terminal-scroll {
+      height: calc(100% - 42px);
+      overflow: hidden;
+      padding: 10px 12px;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .terminal-lines {
+      animation: verticalScroll 10s linear infinite;
+    }
+
+    .terminal-lines p {
+      margin: 0 0 8px;
+      white-space: nowrap;
+    }
+
+    .terminal-lines .pii-text { color: #79f2c0; }
+
+    .moving-stage {
+      position: relative;
+      height: calc(100% - 42px);
+      overflow: hidden;
+      padding: 18px;
+    }
+
+    .moving-card {
+      position: absolute;
+      top: 34px;
+      left: 18px;
+      width: min(420px, calc(100% - 36px));
+      padding: 16px;
+      border-radius: 10px;
+      background: #fff;
+      color: #172b4d;
+      font-family: var(--font);
+      animation: horizontalMove 6s ease-in-out infinite alternate;
+    }
+
+    .moving-card h3 {
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    .moving-card code {
+      display: block;
+      margin-top: 8px;
+      font-family: var(--mono);
+      font-size: 14px;
+      color: #0747a6;
+      white-space: nowrap;
+    }
+
+    .geometry-instructions {
+      position: absolute;
+      left: 96px;
+      right: 96px;
+      bottom: 22px;
+      z-index: 3;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px;
+      background: rgba(0,0,0,0.36);
+      font-family: var(--font);
+      font-size: 13px;
+      color: #dfe1e6;
+    }
+
+    @keyframes verticalScroll {
+      from { transform: translateY(0); }
+      to { transform: translateY(-48%); }
+    }
+
+    @keyframes horizontalMove {
+      from { transform: translateX(0); }
+      to { transform: translateX(40%); }
+    }
+
     kbd {
       font-family: var(--mono);
       font-size: 0.78rem;
@@ -455,7 +633,7 @@
       </p>
       <div class="hint">
         Switch scenarios with the tabs below or keyboard shortcuts
-        <kbd>1</kbd>–<kbd>5</kbd>. Use realistic window sizing (~1100px wide) so OCR text height stays above the detector threshold.
+        <kbd>1</kbd>–<kbd>6</kbd>. Use realistic window sizing (~1100px wide) so OCR text height stays above the detector threshold.
       </div>
     </header>
 
@@ -465,6 +643,7 @@
       <button type="button" data-scenario="chat">3 · Team chat</button>
       <button type="button" data-scenario="checkout">4 · Order checkout</button>
       <button type="button" data-scenario="meeting">5 · Video call notes</button>
+      <button type="button" data-scenario="geometry">6 · Geometry/scroll test</button>
     </nav>
 
     <!-- Scenario 1: Email client -->
@@ -690,12 +869,75 @@ Dial-in backup: +1 415 555 0192</textarea>
         </aside>
       </div>
     </section>
+
+    <!-- Scenario 6: Geometry / scrolling -->
+    <section id="geometry" class="scenario" aria-label="Compositor geometry and scrolling scenario">
+      <div class="scenario-label">Flow 6 · Compositor geometry and scrolling test <span class="pii-tag">edge emails + motion</span></div>
+      <div class="geometry-test">
+        <div class="edge-rulers"></div>
+        <div class="left-edge-strip">left edge must be visible</div>
+        <div class="right-edge-strip">right edge must be visible</div>
+
+        <div class="geometry-corner corner-tl">
+          <strong>top left</strong>
+          tl.geometry@pii-test.dev
+        </div>
+        <div class="geometry-corner corner-tr">
+          <strong>top right</strong>
+          tr.geometry@pii-test.dev
+        </div>
+        <div class="geometry-corner corner-bl">
+          <strong>bottom left</strong>
+          bl.geometry@pii-test.dev
+        </div>
+        <div class="geometry-corner corner-br">
+          <strong>bottom right</strong>
+          br.geometry@pii-test.dev
+        </div>
+
+        <div class="scroll-lab">
+          <div class="scroll-pane">
+            <div class="pane-title">Auto-scrolling terminal text</div>
+            <div class="terminal-scroll" aria-label="Auto scrolling terminal output">
+              <div class="terminal-lines">
+                <p>00:00:01 INFO request user=<span class="pii-text">avery.left-edge@pii-test.dev</span> status=200</p>
+                <p>00:00:02 INFO payload contact=<span class="pii-text">billing-escalation@northwind-logistics.com</span></p>
+                <p>00:00:03 WARN callback phone=+1-415-555-0192 trace=fb29</p>
+                <p>00:00:04 INFO subscriber=<span class="pii-text">priya.nair@homelab.dev</span> channel=sms</p>
+                <p>00:00:05 INFO support=<span class="pii-text">support-routing@contoso.example</span></p>
+                <p>00:00:06 INFO request user=<span class="pii-text">avery.left-edge@pii-test.dev</span> status=200</p>
+                <p>00:00:07 INFO payload contact=<span class="pii-text">billing-escalation@northwind-logistics.com</span></p>
+                <p>00:00:08 WARN callback phone=+1-415-555-0192 trace=fb29</p>
+                <p>00:00:09 INFO subscriber=<span class="pii-text">priya.nair@homelab.dev</span> channel=sms</p>
+                <p>00:00:10 INFO support=<span class="pii-text">support-routing@contoso.example</span></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="moving-pane">
+            <div class="pane-title">Moving card / window-drag simulation</div>
+            <div class="moving-stage">
+              <div class="moving-card">
+                <h3>Customer verification</h3>
+                <p>The mask should travel with this card in the delayed preview, not stay fixed at its old position.</p>
+                <code>moving.customer@pii-test.dev</code>
+                <code>fallback phone: 510-555-0173</code>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="geometry-instructions">
+          Pass criteria: all four yellow-bordered edges remain visible, all four corner emails are masked, scrolling masks stay armed, and the moving-card mask follows the card in the delayed preview.
+        </div>
+      </div>
+    </section>
   </div>
 
   <script>
     const buttons = document.querySelectorAll('nav button');
     const scenarios = document.querySelectorAll('.scenario');
-    const order = ['mail', 'crm', 'chat', 'checkout', 'meeting'];
+    const order = ['mail', 'crm', 'chat', 'checkout', 'meeting', 'geometry'];
 
     function show(id) {
       scenarios.forEach(s => s.classList.toggle('active', s.id === id));
@@ -709,7 +951,7 @@ Dial-in backup: +1 415 555 0192</textarea>
 
     document.addEventListener('keydown', (e) => {
       const n = parseInt(e.key, 10);
-      if (n >= 1 && n <= 5) show(order[n - 1]);
+      if (n >= 1 && n <= 6) show(order[n - 1]);
     });
 
     const hash = location.hash.replace('#', '');

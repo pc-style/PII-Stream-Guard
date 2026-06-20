@@ -206,16 +206,27 @@ final class PreviewWindowController: NSWindowController {
 
     private func tick() {
         let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
-        guard let sample = frameStore.sample(atOrBefore: targetTime) else { return }
-        let snapshot = boxStore.snapshot(for: sample, maxAge: guardMode.maxSnapshotAge) ?? DetectionSnapshot(
-            frameID: sample.id,
-            boxes: [],
-            frameSize: sample.frameSize,
-            capturedAt: sample.capturedAt,
-            guardMode: guardMode,
-            armed: true,
-            blackoutWholeFrame: true
-        )
+        let delayedSample = frameStore.sample(atOrBefore: targetTime)
+        let freshSnapshot = boxStore.snapshot(atOrBefore: targetTime, maxAge: guardMode.maxSnapshotAge)
+        let sample: FrameSample
+        let snapshot: DetectionSnapshot
+
+        if let freshSnapshot, let snapshotSample = frameStore.sample(frameID: freshSnapshot.frameID) {
+            sample = snapshotSample
+            snapshot = freshSnapshot
+        } else {
+            guard let delayedSample else { return }
+            sample = delayedSample
+            snapshot = DetectionSnapshot(
+                frameID: sample.id,
+                boxes: [],
+                frameSize: sample.frameSize,
+                capturedAt: sample.capturedAt,
+                guardMode: guardMode,
+                armed: true,
+                blackoutWholeFrame: true
+            )
+        }
         previewView.updateFrame(sample.pixelBuffer)
         previewView.updateOverlay(
             boxes: snapshot.boxes,

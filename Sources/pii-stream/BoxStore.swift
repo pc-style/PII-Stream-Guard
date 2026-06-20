@@ -38,6 +38,16 @@ final class BoxStore {
         return snapshot
     }
 
+    func snapshot(atOrBefore capturedAt: TimeInterval, maxAge: TimeInterval) -> DetectionSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let snapshot = snapshots.last(where: { $0.capturedAt <= capturedAt }),
+              capturedAt - snapshot.capturedAt <= maxAge else {
+            return nil
+        }
+        return snapshot
+    }
+
     func aggregate(from start: TimeInterval, through end: TimeInterval, fallbackAt capturedAt: TimeInterval) -> DetectionSnapshot {
         lock.lock()
         defer { lock.unlock() }
@@ -108,5 +118,11 @@ final class FrameStore {
         lock.lock()
         defer { lock.unlock() }
         return samples.last(where: { $0.capturedAt <= capturedAt })
+    }
+
+    func sample(frameID: UInt64) -> FrameSample? {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples.last(where: { $0.id == frameID })
     }
 }
