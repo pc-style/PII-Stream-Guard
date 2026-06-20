@@ -31,6 +31,14 @@ struct NormalizedText {
 }
 
 struct VisionPIIDetector: PIIDetector {
+    private struct TextFragment {
+        let raw: String
+        let digits: String
+        let rect: CGRect
+        let confidence: Float
+        let detectedAt: TimeInterval
+    }
+
     let needles: [String]
     let checkEmail: Bool
     let checkPhone: Bool
@@ -86,11 +94,23 @@ struct VisionPIIDetector: PIIDetector {
         let now = ProcessInfo.processInfo.systemUptime
         let normalizedNeedles = needles.map { $0.lowercased().filter { !$0.isWhitespace } }
         var boxes: [PIIBox] = []
+        var fragments: [TextFragment] = []
 
         for observation in request.results ?? [] {
             for candidate in observation.topCandidates(3) {
                 let raw = candidate.string
                 let confidence = candidate.confidence
+                let candidateRect = observation.boundingBox
+                let digits = raw.filter(\.isNumber)
+                if (2...6).contains(digits.count) {
+                    fragments.append(TextFragment(
+                        raw: raw,
+                        digits: digits,
+                        rect: candidateRect,
+                        confidence: confidence,
+                        detectedAt: now
+                    ))
+                }
 
                 if checkEmail {
                     collectEmailBoxes(
@@ -136,6 +156,10 @@ struct VisionPIIDetector: PIIDetector {
                     }
                 }
             }
+        }
+
+        if checkPhone {
+            collectSplitPhoneBoxes(from: fragments, into: &boxes)
         }
 
         return deduplicated(boxes)
@@ -232,6 +256,47 @@ struct VisionPIIDetector: PIIDetector {
         guard digits.count >= 10, digits.count <= 15 else { return nil }
         let hasLeadingPlus = raw.first { !$0.isWhitespace } == "+"
         return hasLeadingPlus ? "+\(digits)" : digits
+    }
+
+    private func collectSplitPhoneBoxes(from fragments: [TextFragment], into boxes: inout [PIIBox]) {
+        let candidates = fragments
+            .filter { $0.digits.count == 3 || $0.digits.count == 4 }
+            .sorted {
+                if abs($0.rect.midY - $1.rect.midY) > 0.02 {
+                    return $0.rect.midY > $1.rect.midY
+                }
+                return $0.rect.minX < $1.rect.minX
+            }
+
+        guard candidates.count >= 3 else { return }
+
+        for i in 0..<(candidates.count - 2) {
+            let a = candidates[i]
+            let b = candidates[i + 1]
+            let c = candidates[i + 2]
+            guard a.digits.count == 3, b.digits.count == 3, c.digits.count == 4 else { continue }
+            guard sameTextRow(a.rect, b.rect), sameTextRow(b.rect, c.rect) else { continue }
+            guard reasonableSplitPhoneGap(a.rect, b.rect), reasonableSplitPhoneGap(b.rect, c.rect) else { continue }
+
+            boxes.append(PIIBox(
+                kind: .phone,
+                matched: a.digits + b.digits + c.digits,
+                confidence: min(a.confidence, b.confidence, c.confidence),
+                normalizedRect: a.rect.union(b.rect).union(c.rect),
+                detectedAt: max(a.detectedAt, b.detectedAt, c.detectedAt)
+            ))
+        }
+    }
+
+    private func sameTextRow(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        let tolerance = max(lhs.height, rhs.height) * 1.8 + 0.01
+        return abs(lhs.midY - rhs.midY) <= tolerance
+    }
+
+    private func reasonableSplitPhoneGap(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        let gap = rhs.minX - lhs.maxX
+        guard gap >= -0.01 else { return false }
+        return gap <= max(lhs.width, rhs.width) * 4 + 0.08
     }
 
     private func deduplicated(_ boxes: [PIIBox]) -> [PIIBox] {

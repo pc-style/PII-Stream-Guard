@@ -28,6 +28,9 @@ do {
         if exitCode != 0 {
             exit(exitCode)
         }
+    case .detectImage(let options):
+        let runner = ImageDetectionRunner(options: options)
+        try runner.run()
     }
 } catch CLIError.help {
     print(CLI.helpText)

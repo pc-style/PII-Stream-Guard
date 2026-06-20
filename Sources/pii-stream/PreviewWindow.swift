@@ -553,6 +553,8 @@ enum CLI {
             return .watch(try parseWatchOptions(Array(args.dropFirst(2))))
         case "benchmark":
             return .benchmark(try parseBenchmarkOptions(Array(args.dropFirst(2))))
+        case "detect-image":
+            return .detectImage(try parseDetectImageOptions(Array(args.dropFirst(2))))
         default:
             throw CLIError.usage
         }
@@ -615,6 +617,77 @@ enum CLI {
         }
         options.settingsOverride = settingsOverride
         return options
+    }
+
+    private static func parseDetectImageOptions(_ args: [String]) throws -> DetectImageOptions {
+        var imagePath: String?
+        var needles: [String] = []
+        var checkEmail = true
+        var checkPhone = true
+        var mode: GuardMode = .standard
+        var settingsOverride: DetectorSettings?
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--image":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--image") }
+                imagePath = args[i]
+            case "--needle":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--needle") }
+                needles.append(args[i])
+            case "--json":
+                break
+            case "--no-email":
+                checkEmail = false
+            case "--no-phone":
+                checkPhone = false
+            case "--mode":
+                i += 1
+                guard i < args.count, let parsed = parseGuardMode(args[i]) else {
+                    throw CLIError.invalidValue("--mode")
+                }
+                mode = parsed
+            case "--accurate":
+                var settings = settingsOverride ?? mode.detectorSettings
+                settings.accurate = true
+                settingsOverride = settings
+            case "--min-text-height":
+                i += 1
+                guard i < args.count, let value = Float(args[i]), value > 0, value < 1 else {
+                    throw CLIError.invalidValue("--min-text-height")
+                }
+                var settings = settingsOverride ?? mode.detectorSettings
+                settings.minimumTextHeight = value
+                settingsOverride = settings
+            case "--max-pixel-size":
+                i += 1
+                guard i < args.count, let value = Double(args[i]), value > 0 else {
+                    throw CLIError.invalidValue("--max-pixel-size")
+                }
+                var settings = settingsOverride ?? mode.detectorSettings
+                settings.maxPixelSize = CGFloat(value)
+                settingsOverride = settings
+            case "--enhance-low-contrast":
+                var settings = settingsOverride ?? mode.detectorSettings
+                settings.enhanceLowContrast = true
+                settingsOverride = settings
+            default:
+                throw CLIError.unknownFlag(args[i])
+            }
+            i += 1
+        }
+
+        guard let imagePath else { throw CLIError.missingValue("--image") }
+        return DetectImageOptions(
+            imagePath: imagePath,
+            needles: needles,
+            checkEmail: checkEmail,
+            checkPhone: checkPhone,
+            mode: mode,
+            settingsOverride: settingsOverride
+        )
     }
 
     private static func parseBenchmarkOptions(_ args: [String]) throws -> BenchmarkOptions {
@@ -706,6 +779,7 @@ enum CLI {
     Usage:
       pii-stream watch [options]
       pii-stream benchmark [options]
+      pii-stream detect-image --image PATH [options] --json
 
     Watch options:
       --needle TEXT   Additional PII needle to match (repeatable)
@@ -735,6 +809,21 @@ enum CLI {
       --output PATH   Write JSON summary to PATH instead of stdout
       --csv PATH      Write CSV summary to PATH
 
+    Detect image options:
+      --image PATH    Image to scan
+      --needle TEXT   Additional PII needle to match (repeatable)
+      --json          Emit detector JSON for benchmark adapters
+      --no-email      Disable email regex detection
+      --no-phone      Disable phone number detection
+      --mode MODE     lockdown, standard, or low-latency (default: standard)
+      --accurate      Use accurate Vision OCR (slower)
+      --min-text-height N
+                     Override Vision minimum text height
+      --max-pixel-size N
+                     Override longest OCR side after downscale
+      --enhance-low-contrast
+                     Boost contrast/sharpness before OCR
+
     General:
       -h, --help      Show this help
     """
@@ -743,6 +832,7 @@ enum CLI {
 enum Command {
     case watch(WatchOptions)
     case benchmark(BenchmarkOptions)
+    case detectImage(DetectImageOptions)
 }
 
 enum CLIError: Error, LocalizedError {
