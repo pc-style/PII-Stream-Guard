@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-enum GuardMode: String, CaseIterable {
+enum GuardMode: String, CaseIterable, Codable {
     case lockdown
     case standard
     case lowLatency = "low-latency"
@@ -88,7 +88,7 @@ enum GuardMode: String, CaseIterable {
     }
 }
 
-enum MaskMode: String {
+enum MaskMode: String, Codable {
     case boundingBox
     case blackout
 }

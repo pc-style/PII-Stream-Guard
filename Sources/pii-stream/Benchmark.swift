@@ -3,7 +3,7 @@ import CoreImage
 import CoreVideo
 import Foundation
 
-struct DetectorSettings: Codable {
+struct DetectorSettings: Codable, Equatable {
     var accurate: Bool = false
     var maxPixelSize: CGFloat = 1440
     var minimumTextHeight: Float = 0.012

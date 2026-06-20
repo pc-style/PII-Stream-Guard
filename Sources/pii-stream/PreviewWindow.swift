@@ -331,28 +331,27 @@ final class PreviewWindowController: NSWindowController {
 
 final class AppCoordinator: NSObject, NSApplicationDelegate {
     let frameStore = FrameStore()
+    private let captureFrameStore: FrameStore
     let boxStore = BoxStore()
     let options: WatchOptions
 
     private var capture: ScreenCaptureManager?
     private var preview: PreviewWindowController?
     private let detectionQueue = DispatchQueue(label: "pii-stream.detection")
-    private var detector: VisionPIIDetector
-    private var guardState: GuardStateMachine
-    private var boxStabilizer = BoxStabilizer()
+    private var processor: FrameProcessor
+    private var remoteClient: RemoteFrameClient?
     private var guardMode: GuardMode
     private var lastDetectionTime: TimeInterval = 0
     private var lastLoggedSignature: String = ""
     private let detectionStateLock = NSLock()
     private var detectionInFlight = false
     private var pendingDetectionSample: FrameSample?
-    private var newestAcceptedFrameID: UInt64 = 0
 
     init(options: WatchOptions) {
         self.options = options
+        captureFrameStore = options.remote == nil ? frameStore : FrameStore()
         guardMode = options.mode
-        detector = AppCoordinator.makeDetector(options: options, mode: options.mode)
-        guardState = GuardStateMachine(mode: options.mode)
+        processor = FrameProcessor(options: options.processingOptions)
         super.init()
     }
 
@@ -368,7 +367,33 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             self?.setMode(mode)
         }
 
-        capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] sample in
+        if let remote = options.remote {
+            guard let token = options.token else {
+                fputs("Remote watch requires --token TOKEN.\n", stderr)
+                NSApp.terminate(nil)
+                return
+            }
+            do {
+                remoteClient = try RemoteFrameClient(
+                    hostPort: remote,
+                    token: token,
+                    config: options.processingOptions,
+                    onResponse: { [weak self] processed in
+                        self?.acceptRemoteFrame(processed)
+                    },
+                    onDisconnect: { [weak self] in
+                        self?.failClosed()
+                    }
+                )
+                remoteClient?.start()
+            } catch {
+                fputs("\(error.localizedDescription)\n", stderr)
+                NSApp.terminate(nil)
+                return
+            }
+        }
+
+        capture = ScreenCaptureManager(frameStore: captureFrameStore) { [weak self] sample in
             self?.scheduleDetectionIfNeeded(sample: sample)
         }
 
@@ -387,6 +412,14 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleDetectionIfNeeded(sample: FrameSample) {
+        if options.remote != nil {
+            if shouldStartDetectionNow() {
+                lastDetectionTime = ProcessInfo.processInfo.systemUptime
+                remoteClient?.send(sample: sample)
+            }
+            return
+        }
+
         detectionStateLock.lock()
         if detectionInFlight {
             pendingDetectionSample = sample
@@ -425,47 +458,20 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     private func detect(sample: FrameSample) {
-        guard sample.id > newestAcceptedFrameID else { return }
-        let detectedBoxes = detector.detect(in: sample.pixelBuffer)
-        guard sample.id > newestAcceptedFrameID else { return }
-        newestAcceptedFrameID = sample.id
-        let guardSnapshot = guardState.ingest(detected: detectedBoxes)
-        let displayBoxes: [PIIBox]
-        if guardSnapshot.active {
-            displayBoxes = boxStabilizer.stabilize(guardSnapshot.boxes)
-        } else {
-            boxStabilizer.reset()
-            displayBoxes = []
-        }
-
-        boxStore.update(DetectionSnapshot(
-            frameID: sample.id,
-            boxes: displayBoxes,
-            frameSize: sample.frameSize,
-            capturedAt: sample.capturedAt,
-            guardMode: guardSnapshot.mode,
-            armed: guardSnapshot.active,
-            blackoutWholeFrame: guardSnapshot.blackoutWholeFrame
-        ))
-        logDetections(detectedBoxes, frameID: sample.id, guardSnapshot: guardSnapshot)
-    }
-
-    private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
-        switch mode {
-        case .lockdown, .standard, .lowLatency:
-            return true
-        }
+        guard let processed = processor.process(sample: sample) else { return }
+        boxStore.update(processed.snapshot)
+        logDetections(processed.detectedBoxes, snapshot: processed.snapshot)
     }
 
     private func setMode(_ mode: GuardMode) {
         detectionQueue.async { [weak self] in
             guard let self else { return }
             self.guardMode = mode
-            self.guardState.setMode(mode)
-            self.boxStabilizer.reset()
-            self.detector = AppCoordinator.makeDetector(options: self.options, mode: mode)
+            var updated = self.options.processingOptions
+            updated.mode = mode
+            self.processor.updateOptions(updated)
+            self.remoteClient?.updateConfig(updated)
             self.lastDetectionTime = 0
-            self.newestAcceptedFrameID = 0
             self.detectionStateLock.lock()
             self.detectionInFlight = false
             self.pendingDetectionSample = nil
@@ -473,20 +479,32 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func makeDetector(options: WatchOptions, mode: GuardMode) -> VisionPIIDetector {
-        let settings = options.settingsOverride ?? mode.detectorSettings
-        return VisionPIIDetector(
-            needles: options.needles,
-            checkEmail: options.checkEmail,
-            checkPhone: options.checkPhone,
-            accurate: settings.accurate,
-            maxPixelSize: settings.maxPixelSize,
-            minimumTextHeight: settings.minimumTextHeight,
-            enhanceLowContrast: settings.enhanceLowContrast
-        )
+    private func acceptRemoteFrame(_ processed: RemoteProcessedFrame) {
+        let sample = frameStore.update(processed.buffer)
+        boxStore.update(DetectionSnapshot(
+            frameID: sample.id,
+            boxes: [],
+            frameSize: sample.frameSize,
+            capturedAt: sample.capturedAt,
+            guardMode: processed.snapshot.guardMode,
+            armed: processed.snapshot.armed,
+            blackoutWholeFrame: false
+        ))
     }
 
-    private func logDetections(_ boxes: [PIIBox], frameID: UInt64, guardSnapshot: GuardStateSnapshot) {
+    private func failClosed() {
+        boxStore.update(DetectionSnapshot(
+            frameID: 0,
+            boxes: [],
+            frameSize: .zero,
+            capturedAt: ProcessInfo.processInfo.systemUptime,
+            guardMode: guardMode,
+            armed: true,
+            blackoutWholeFrame: true
+        ))
+    }
+
+    private func logDetections(_ boxes: [PIIBox], snapshot: DetectionSnapshot) {
         guard !boxes.isEmpty else {
             lastLoggedSignature = ""
             return
@@ -494,19 +512,19 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         let signature = boxes.map {
             "\($0.kind.rawValue):len:\($0.matched.count):rect:\(rectBucket(for: $0.normalizedRect))"
         }.sorted().joined(separator: "|")
-            + "|\(guardSnapshot.mode.rawValue)|armed:\(guardSnapshot.active)"
+            + "|\(snapshot.guardMode.rawValue)|armed:\(snapshot.armed)"
         guard signature != lastLoggedSignature else { return }
         lastLoggedSignature = signature
 
         for box in boxes {
             let payload: [String: Any] = [
-                "frameID": frameID,
+                "frameID": snapshot.frameID,
                 "kind": box.kind.rawValue,
                 "matchedLength": box.matched.count,
                 "confidence": box.confidence,
                 "detectedAt": box.detectedAt,
-                "guardMode": guardSnapshot.mode.rawValue,
-                "armed": guardSnapshot.active,
+                "guardMode": snapshot.guardMode.rawValue,
+                "armed": snapshot.armed,
                 "rect": [
                     "x": box.normalizedRect.origin.x,
                     "y": box.normalizedRect.origin.y,
@@ -537,6 +555,25 @@ struct WatchOptions {
     var fps: Double?
     var mode: GuardMode = .standard
     var settingsOverride: DetectorSettings?
+    var remote: String?
+    var token: String?
+
+    var processingOptions: FrameProcessingOptions {
+        FrameProcessingOptions(
+            needles: needles,
+            checkEmail: checkEmail,
+            checkPhone: checkPhone,
+            fps: fps,
+            mode: mode,
+            settingsOverride: settingsOverride
+        )
+    }
+}
+
+struct ServeOptions {
+    var host: String = "127.0.0.1"
+    var port: UInt16 = 8765
+    var token: String?
 }
 
 enum CLI {
@@ -551,6 +588,8 @@ enum CLI {
         switch args[1] {
         case "watch":
             return .watch(try parseWatchOptions(Array(args.dropFirst(2))))
+        case "serve":
+            return .serve(try parseServeOptions(Array(args.dropFirst(2))))
         case "benchmark":
             return .benchmark(try parseBenchmarkOptions(Array(args.dropFirst(2))))
         case "detect-image":
@@ -610,12 +649,47 @@ enum CLI {
                 var settings = settingsOverride ?? options.mode.detectorSettings
                 settings.enhanceLowContrast = true
                 settingsOverride = settings
+            case "--remote":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--remote") }
+                options.remote = args[i]
+            case "--token":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--token") }
+                options.token = args[i]
             default:
                 throw CLIError.unknownFlag(args[i])
             }
             i += 1
         }
         options.settingsOverride = settingsOverride
+        return options
+    }
+
+    private static func parseServeOptions(_ args: [String]) throws -> ServeOptions {
+        var options = ServeOptions()
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--host":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--host") }
+                options.host = args[i]
+            case "--port":
+                i += 1
+                guard i < args.count, let port = UInt16(args[i]), port > 0 else {
+                    throw CLIError.invalidValue("--port")
+                }
+                options.port = port
+            case "--token":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--token") }
+                options.token = args[i]
+            default:
+                throw CLIError.unknownFlag(args[i])
+            }
+            i += 1
+        }
         return options
     }
 
@@ -778,6 +852,7 @@ enum CLI {
 
     Usage:
       pii-stream watch [options]
+      pii-stream serve [options]
       pii-stream benchmark [options]
       pii-stream detect-image --image PATH [options] --json
 
@@ -794,6 +869,14 @@ enum CLI {
                      Override longest OCR side after downscale
       --enhance-low-contrast
                      Boost contrast/sharpness before OCR
+      --remote HOST:PORT
+                     Send captured frames to a remote processor
+      --token TOKEN   Shared token for remote processing
+
+    Serve options:
+      --host HOST     Listen host (default: 127.0.0.1; use 0.0.0.0 for LAN)
+      --port PORT     Listen port (default: 8765)
+      --token TOKEN   Shared token; generated and printed when omitted
 
     Benchmark:
       Captures live frames once, then measures detection latency across a
@@ -831,6 +914,7 @@ enum CLI {
 
 enum Command {
     case watch(WatchOptions)
+    case serve(ServeOptions)
     case benchmark(BenchmarkOptions)
     case detectImage(DetectImageOptions)
 }
