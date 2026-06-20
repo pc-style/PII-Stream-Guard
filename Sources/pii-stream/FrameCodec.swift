@@ -27,6 +27,8 @@ enum FrameCodecError: Error, LocalizedError {
 enum FrameCodec {
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private static let colorSpace = CGColorSpaceCreateDeviceRGB()
+    private static let boxPaddingHorizontal: CGFloat = 12
+    private static let boxPaddingVertical: CGFloat = 8
 
     static func jpegData(from buffer: CVPixelBuffer, quality: CGFloat = 0.72) throws -> Data {
         let image = CIImage(cvPixelBuffer: buffer)
@@ -133,6 +135,7 @@ enum FrameCodec {
         let y = rect.origin.y * CGFloat(height)
         let w = rect.width * CGFloat(width)
         let h = rect.height * CGFloat(height)
-        return CGRect(x: x, y: y, width: w, height: h).insetBy(dx: -12, dy: -8)
+        return CGRect(x: x, y: y, width: w, height: h)
+            .insetBy(dx: -boxPaddingHorizontal, dy: -boxPaddingVertical)
     }
 }

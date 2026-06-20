@@ -488,7 +488,7 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             capturedAt: sample.capturedAt,
             guardMode: processed.snapshot.guardMode,
             armed: processed.snapshot.armed,
-            blackoutWholeFrame: false
+            blackoutWholeFrame: processed.snapshot.blackoutWholeFrame
         ))
     }
 

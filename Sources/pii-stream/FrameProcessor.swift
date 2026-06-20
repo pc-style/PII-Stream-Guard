@@ -34,6 +34,8 @@ struct ProcessedFrame {
     let processedAt: TimeInterval
 }
 
+/// Stateful frame processor. Callers must serialize access to this type; `process(sample:)`
+/// mutates detector, guard-state, stabilization, and frame-order state.
 final class FrameProcessor {
     private var options: FrameProcessingOptions
     private var detector: VisionPIIDetector

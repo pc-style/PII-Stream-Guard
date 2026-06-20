@@ -34,12 +34,24 @@ private struct RemoteDetection: Codable {
     var confidence: Float
     var matchedLength: Int
     var rect: RemoteRect
+    var detectedAt: TimeInterval
 
     init(box: PIIBox) {
         kind = box.kind
         confidence = box.confidence
         matchedLength = box.matched.count
         rect = RemoteRect(box.normalizedRect)
+        detectedAt = box.detectedAt
+    }
+
+    var box: PIIBox {
+        PIIBox(
+            kind: kind,
+            matched: String(repeating: "*", count: matchedLength),
+            confidence: confidence,
+            normalizedRect: rect.cgRect,
+            detectedAt: detectedAt
+        )
     }
 }
 
@@ -54,6 +66,10 @@ private struct RemoteRect: Codable {
         y = rect.origin.y
         width = rect.width
         height = rect.height
+    }
+
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
     }
 }
 
@@ -199,6 +215,7 @@ final class RemoteFrameClient {
     private var config: FrameProcessingOptions
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "pii-stream.remote.client")
+    private let configLock = NSLock()
     private let onResponse: (RemoteProcessedFrame) -> Void
     private let onDisconnect: () -> Void
     private var newestResponseID: UInt64 = 0
@@ -241,12 +258,17 @@ final class RemoteFrameClient {
     }
 
     func updateConfig(_ config: FrameProcessingOptions) {
+        configLock.lock()
         self.config = config
+        configLock.unlock()
         send(config: config, sample: nil)
     }
 
     func send(sample: FrameSample) {
-        send(config: config, sample: sample)
+        configLock.lock()
+        let currentConfig = config
+        configLock.unlock()
+        send(config: currentConfig, sample: sample)
     }
 
     private func send(config: FrameProcessingOptions, sample: FrameSample?) {
@@ -298,12 +320,12 @@ final class RemoteFrameClient {
                 self.newestResponseID = response.frameID
                 let snapshot = DetectionSnapshot(
                     frameID: response.frameID,
-                    boxes: [],
+                    boxes: response.detections.map(\.box),
                     frameSize: CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer)),
                     capturedAt: response.capturedAt,
                     guardMode: response.guardMode,
                     armed: response.armed,
-                    blackoutWholeFrame: false
+                    blackoutWholeFrame: response.blackoutWholeFrame
                 )
                 self.onResponse(RemoteProcessedFrame(buffer: buffer, snapshot: snapshot))
             } else if let data,
