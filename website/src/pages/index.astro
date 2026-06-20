@@ -1,0 +1,299 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const title = "PII Stream Guard - live privacy preview for screen sharing";
+const description =
+  "A live privacy preview for screen sharing. Apple Vision OCR finds the emails, phone numbers, and secrets on your display, then boxes or blacks them out before they reach the stream. macOS, open source, runs locally.";
+
+const leaks = [
+  {
+    kind: "stream",
+    name: "the stream",
+    desc: "you go live for two hours and your email sits in the corner of the frame the whole time. <b>by the end it belongs to everyone watching.</b>",
+  },
+  {
+    kind: "demo",
+    name: "the client demo",
+    desc: "screen-sharing with a client and your personal gmail is right there in the tab bar. <b>the room notices before you do.</b>",
+  },
+  {
+    kind: "recording",
+    name: "the recording",
+    desc: "a customer's phone number is visible for fourteen minutes of your tutorial. <b>you find out after it is published.</b>",
+  },
+  {
+    kind: "handoff",
+    name: "the handoff",
+    desc: "you share a log with an internal string in it. <b>it is now in three slack channels you do not own.</b>",
+  },
+];
+
+const steps = [
+  { n: "01", name: "capture", impl: "ScreenCaptureKit", p: "the main display is captured to a pixel buffer continuously. capture never blocks on ocr." },
+  { n: "02", name: "throttle", impl: "background queue", p: "frames are downscaled and ocr runs five to ten times a second, off the hot path." },
+  { n: "03", name: "detect", impl: "Vision OCR", p: "email regex and custom needles run against recognized text, producing per-substring boxes." },
+  { n: "04", name: "store", impl: "PIIBox matches", p: "a thread-safe snapshot holds the latest boxes, so the preview never waits on detection." },
+  { n: "05", name: "render", impl: "protected preview", p: "the delayed frame is drawn with boxes or blackout over anything that matched." },
+];
+
+const modes = [
+  { name: "lockdown", who: "most cautious", p: "accurate ocr, a longer delay buffer, and blackouts while armed. for demos and recordings you cannot re-shoot.", tags: ["accurate ocr", "blackout", "enhance low contrast"], def: false },
+  { name: "standard", who: "balanced", p: "fast ocr, a modest delay, and boxes by default. the one you reach for most days.", tags: ["fast ocr", "boxes"], def: true },
+  { name: "low-latency", who: "responsive", p: "lower delay and a faster cadence. for live walkthroughs where the preview should track your hands.", tags: ["lowest delay", "faster cadence"], def: false },
+];
+
+const topo = [
+  { name: "local", who: "one mac", p: "the same machine captures the screen, runs ocr, and renders the protected preview. no network, no trust surface." },
+  { name: "remote", who: "client and server", p: "a client mac captures frames and sends them to a processing server over a token-authenticated websocket. if the remote path fails, the client fails closed with a black frame." },
+];
+
+const cmds = [
+  { label: "one-line installer", code: "./scripts/setup.sh" },
+  { label: "build from source", code: "swift build -c release\n.build/release/pii-stream watch --mode standard" },
+  { label: "remote / server + client", code: 'pii-stream serve --host 0.0.0.0 --port 8765 \\\n  --token "replace-with-a-long-random-token"\n\npii-stream watch --remote SERVER:8765 \\\n  --token "replace-with-a-long-random-token" --mode standard' },
+  { label: "scan a static image", code: "pii-stream detect-image --image ./screenshot.png --json" },
+];
+---
+
+<Layout title={title} description={description}>
+  <header>
+    <p class="prompt-line"><span class="ok">➜</span> pii-stream watch --mode standard</p>
+    <h1>your screen is leaking. guard it before they see.<span class="cursor"></span></h1>
+    <p class="sub">
+      a live privacy preview for screen sharing. apple vision ocr finds the
+      <em>emails, phone numbers, and secrets</em> on your display, then boxes or
+      blacks them out before they reach the stream.
+    </p>
+    <a class="hero-cta" href="#install">install &rarr;</a>
+    <a class="source-link" href="https://github.com/pc-style/pii-stream-guard">view source</a>
+    <div class="avail"><span class="dot"></span> open source &middot; macOS 14+ &middot; apple vision ocr</div>
+
+    <div class="guard" data-rv="rise" aria-label="live demo: guard boxes drawn over a detected email, phone, and custom string">
+      <div class="guard-bar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="addr">guard window / preview</span>
+        <span class="live">LIVE</span>
+      </div>
+      <div class="guard-screen">
+        <div class="msg"><div class="who">support</div><div class="b">account on file: <span class="pii">adam.krupa@gmail.com</span></div></div>
+        <div class="msg me"><div class="who">you</div><div class="b">call me back at <span class="pii">+1 (312) 847-1928</span> after 5.</div></div>
+        <div class="msg"><div class="who">support</div><div class="b">case ref <span class="pii">customer-4821</span></div></div>
+        <span class="box" data-i="0"><span class="lab">email</span></span>
+        <span class="box" data-i="1"><span class="lab">phone</span></span>
+        <span class="box" data-i="2"><span class="lab">needle</span></span>
+      </div>
+      <div class="guard-foot">
+        <span>mode: standard &middot; 8 fps</span>
+        <span class="found">found <b>3</b> &middot; 2 blacked</span>
+      </div>
+    </div>
+    <p class="guard-cap">the guard window finds an email, a phone, and a custom string, and draws a box over each before the frame is shown.</p>
+  </header>
+
+  <section id="leak">
+    <h2>the leak</h2>
+    <ul class="log">
+      {leaks.map((l) => (
+        <li data-rv="rise">
+          <span class="kind">{l.kind}</span>
+          <span>
+            <span class="name">{l.name}</span>
+            <span class="desc" set:html={l.desc} />
+          </span>
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  <section id="fix">
+    <h2>the fix</h2>
+    <div class="callout" data-rv="rise">
+      <p class="principle">over-redact is safer than leak.</p>
+      <p>
+        guard watches your screen, finds what looks like personal data, and
+        boxes or blacks it out on a delayed preview before it ever reaches the
+        stream. capture and detection are decoupled, so the preview never waits
+        on ocr. if the remote path fails, the client fails closed with a black
+        frame.
+      </p>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>how it works</h2>
+    <div class="steps">
+      {steps.map((s) => (
+        <div class="step" data-rv="rise">
+          <span class="n">{s.n}</span>
+          <div>
+            <span class="name">{s.name}</span><span class="impl">{s.impl}</span>
+            <p>{s.p}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <section id="modes">
+    <h2>modes</h2>
+    {modes.map((m) => (
+      <div class="entry" data-rv="rise">
+        <span class="name">{m.name}</span><span class="who">{m.who}</span>
+        <p>{m.p}</p>
+        {m.def && <span class="tag default">default</span>}
+        {m.tags.map((t) => <span class="tag">{t}</span>)}
+      </div>
+    ))}
+  </section>
+
+  <section id="topology">
+    <h2>topology</h2>
+    {topo.map((t) => (
+      <div class="entry" data-rv="rise">
+        <span class="name">{t.name}</span><span class="who">{t.who}</span>
+        <p>{t.p}</p>
+      </div>
+    ))}
+  </section>
+
+  <section id="install">
+    <h2>install</h2>
+    <p class="lead">
+      macOS only. built with swiftpm, no xcode project. the interactive
+      installer builds the release binary and offers to start any mode.
+    </p>
+    <ul class="reqs">
+      <li><b>macOS 14</b> or newer</li>
+      <li><b>SwiftPM</b> from xcode or command line tools</li>
+      <li><b>Screen Recording</b> permission for your terminal</li>
+    </ul>
+    {cmds.map((c) => (
+      <div class="code">
+        <div class="cap">
+          <span class="label">{c.label}</span>
+          <button class="copy" type="button">copy</button>
+        </div>
+        <pre><code>{c.code}</code></pre>
+      </div>
+    ))}
+  </section>
+
+  <section id="safe">
+    <h2>the safe default</h2>
+    <p class="lead">
+      fails closed with a <em style="color:var(--fg);font-style:normal;border-bottom:1px solid var(--accent)">black frame</em>.
+      if anything in the pipeline breaks, you do not get a partial frame with
+      pii in it. you get black. the safe default is no picture.
+    </p>
+  </section>
+
+  <Fragment slot="scripts">
+    <script>
+      // ── guard demo: position bounding boxes over their pii targets ──
+      (function () {
+        const screenEl = document.querySelector(".guard-screen");
+        if (!screenEl) return;
+        const guard = screenEl.closest(".guard");
+        if (!guard) return;
+        const boxes = Array.prototype.slice.call(
+          guard.querySelectorAll(".box")
+        ) as HTMLElement[];
+        const targets = Array.prototype.slice.call(
+          guard.querySelectorAll(".pii")
+        ) as HTMLElement[];
+
+        function place() {
+          const sr = screenEl!.getBoundingClientRect();
+          boxes.forEach((b, i) => {
+            const t = targets[i];
+            if (!t) return;
+            const r = t.getBoundingClientRect();
+            b.style.left = (r.left - sr.left - 4) + "px";
+            b.style.top = (r.top - sr.top - 4) + "px";
+            b.style.width = (r.width + 8) + "px";
+            b.style.height = (r.height + 8) + "px";
+          });
+        }
+        place();
+        addEventListener("resize", place);
+        addEventListener("load", place);
+        if (document.fonts) document.fonts.ready.then(place);
+
+        const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduce) {
+          boxes.forEach((b) => b.classList.add("on"));
+          return;
+        }
+        let k = 0;
+        function tick() {
+          boxes.forEach((b) => b.classList.remove("on"));
+          boxes[k]?.classList.add("on");
+          k = (k + 1) % boxes.length;
+        }
+        tick();
+        setInterval(tick, 1100);
+      })();
+
+      // ── copy buttons ──
+      document.querySelectorAll(".code").forEach((block) => {
+        const blockEl = block as HTMLElement;
+        const btn = blockEl.querySelector<HTMLButtonElement>(".copy");
+        if (!btn) return;
+        btn.addEventListener("click", () => {
+          const code = blockEl.querySelector("code");
+          if (!code || !navigator.clipboard) return;
+          navigator.clipboard.writeText(code.textContent ?? "").then(() => {
+            btn.textContent = "copied";
+            btn.classList.add("ok");
+            setTimeout(() => {
+              btn.textContent = "copy";
+              btn.classList.remove("ok");
+            }, 1200);
+          });
+        });
+      });
+
+      // ── minimal reveal ──
+      if (document.documentElement.classList.contains("fx")) {
+        const groups = [
+          "header .sub",
+          "header .hero-cta",
+          "header .source-link",
+          "header .avail",
+          ".guard",
+          ".guard-cap",
+          "section > h2",
+          ".log li",
+          ".callout",
+          ".step",
+          ".entry",
+          "#install .lead",
+          ".reqs li",
+          ".code",
+          "#safe .lead",
+        ];
+
+        const io = new IntersectionObserver(
+          (entries, obs) => {
+            for (const e of entries) {
+              if (!e.isIntersecting) continue;
+              e.target.classList.add("rv-in");
+              obs.unobserve(e.target);
+            }
+          },
+          { threshold: 0.15, rootMargin: "0px 0px -8% 0px" }
+        );
+
+        for (const sel of groups) {
+          const nodes = Array.prototype.slice.call(
+            document.querySelectorAll(sel)
+          ) as HTMLElement[];
+          nodes.forEach((node, i) => {
+            node.style.setProperty("--i", String(nodes.length > 1 ? i : 0));
+            io.observe(node);
+          });
+        }
+      }
+    </script>
+  </Fragment>
+</Layout>
