@@ -106,7 +106,7 @@ final class PreviewView: NSView {
 
         for box in boxes {
             let rect = mapsOverlayToBounds
-                ? overlayRect(from: box.normalizedRect, in: viewBounds)
+                ? FrameMasker.pixelRect(from: box.normalizedRect, frameSize: viewBounds.size)
                 : FrameMasker.pixelRect(from: box.normalizedRect, frameSize: frameSize)
             var scaled = CGRect(
                 x: offsetX + rect.origin.x * scaleX,
@@ -141,15 +141,6 @@ final class PreviewView: NSView {
             label.frame = CGRect(x: scaled.minX, y: scaled.maxY + 2, width: min(320, viewBounds.width - scaled.minX), height: 16)
             overlayLayer.addSublayer(label)
         }
-    }
-
-    private func overlayRect(from normalizedRect: CGRect, in bounds: CGRect) -> CGRect {
-        CGRect(
-            x: normalizedRect.origin.x * bounds.width,
-            y: (1 - normalizedRect.origin.y - normalizedRect.height) * bounds.height,
-            width: normalizedRect.width * bounds.width,
-            height: normalizedRect.height * bounds.height
-        )
     }
 
 
