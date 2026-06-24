@@ -11,3 +11,4 @@ DerivedData/
 .pii-stream.env
 benchmark-results/
 recordings/
+.pi/
