@@ -231,7 +231,7 @@ final class PreviewWindowController: NSWindowController {
                 capturedAt: sample.capturedAt,
                 guardMode: guardMode,
                 armed: true,
-                blackoutWholeFrame: true
+                blackoutWholeFrame: presentation != .screenOverlay
             )
         }
         if sample.id != lastDisplayedFrameID {
