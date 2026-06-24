@@ -144,16 +144,21 @@ public struct PIIClassifier {
             }
             guard tokens[start..<maxEnd].contains(where: { raw[$0].contains("@") }) else { continue }
             var end = tokens.index(after: start)
+            var bestMatch: (matched: String, range: Range<String.Index>)?
             while end <= maxEnd {
                 let window = tokens[start..<end]
                 let compact = window.map { raw[$0] }.joined().lowercased()
-                if isWholeEmail(compact) {
+                if isWholeEmail(compact), shouldAcceptWhitespaceEmailWindow(window, raw: raw, compact: compact) {
                     let originalRange = tokens[start].lowerBound..<window.last!.upperBound
-                    appendBox(kind: .email, matched: compact, range: originalRange, fragment: fragment, into: &boxes)
-                    break
+                    if bestMatch == nil || compact.count > bestMatch!.matched.count {
+                        bestMatch = (compact, originalRange)
+                    }
                 }
                 guard end < tokens.endIndex else { break }
                 end = tokens.index(after: end)
+            }
+            if let bestMatch {
+                appendBox(kind: .email, matched: bestMatch.matched, range: bestMatch.range, fragment: fragment, into: &boxes)
             }
         }
     }
@@ -162,6 +167,18 @@ public struct PIIClassifier {
         let nsRange = NSRange(value.startIndex..., in: value)
         guard let match = compactEmailRegex.firstMatch(in: value, range: nsRange) else { return false }
         return match.range.location == 0 && match.range.length == nsRange.length
+    }
+
+    private func shouldAcceptWhitespaceEmailWindow(
+        _ window: ArraySlice<Range<String.Index>>,
+        raw: String,
+        compact: String
+    ) -> Bool {
+        guard let last = window.last, window.count > 1 else { return true }
+        let lastText = raw[last]
+        guard !lastText.contains("@"), !lastText.contains(".") else { return true }
+        let withoutLast = window.dropLast().map { raw[$0] }.joined().lowercased()
+        return !isWholeEmail(withoutLast)
     }
 
     private func collectPhoneBoxes(from fragment: RecognizedTextFragment, into boxes: inout [PIIBox]) {

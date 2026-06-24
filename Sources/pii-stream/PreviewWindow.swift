@@ -185,7 +185,7 @@ final class PreviewWindowController: NSWindowController {
     }
 
     private func startDisplayLoop() {
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
         self.timer = timer
@@ -229,6 +229,7 @@ final class PreviewWindowController: NSWindowController {
         let overlaySignature = signature(
             for: snapshot,
             frameSize: sample.frameSize,
+            viewBounds: previewView.bounds,
             maskMode: maskMode,
             usesBuiltInMasking: usesBuiltInMasking
         )
@@ -334,14 +335,16 @@ final class PreviewWindowController: NSWindowController {
     private func signature(
         for snapshot: DetectionSnapshot,
         frameSize: CGSize,
+        viewBounds: CGRect,
         maskMode: MaskMode,
         usesBuiltInMasking: Bool
     ) -> String {
         let boxSignature = snapshot.boxes.map { box in
-            "\(box.kind.rawValue):\(box.matched):\(rectBucket(for: box.normalizedRect)):c\(Int((box.confidence * 100).rounded()))"
+            "\(box.kind.rawValue):\(rectBucket(for: box.normalizedRect))"
         }.joined(separator: "|")
         return [
             "size:\(Int(frameSize.width))x\(Int(frameSize.height))",
+            "bounds:\(Int(viewBounds.width))x\(Int(viewBounds.height))",
             "mode:\(snapshot.guardMode.rawValue)",
             "mask:\(maskMode.rawValue)",
             "armed:\(snapshot.armed)",

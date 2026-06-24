@@ -45,12 +45,14 @@ struct RemoteDetection: Codable {
 
     var box: PIIBox {
         let safeMatchedLength = max(0, min(matchedLength, 10_000))
+        let safeConfidence = confidence.isFinite ? max(0, min(confidence, 1)) : 0
+        let safeRect = rect.sanitizedNormalizedRect
         return PIIBox(
             kind: kind,
             matched: String(repeating: "*", count: safeMatchedLength),
-            confidence: confidence,
-            normalizedRect: rect.cgRect,
-            detectedAt: detectedAt
+            confidence: safeConfidence,
+            normalizedRect: safeRect,
+            detectedAt: detectedAt.isFinite ? detectedAt : 0
         )
     }
 }
@@ -69,6 +71,16 @@ struct RemoteRect: Codable {
     }
 
     var cgRect: CGRect {
-        CGRect(x: x, y: y, width: width, height: height)
+        sanitizedNormalizedRect
+    }
+
+    var sanitizedNormalizedRect: CGRect {
+        guard x.isFinite, y.isFinite, width.isFinite, height.isFinite else { return .zero }
+        let clampedX = max(0, min(x, 1))
+        let clampedY = max(0, min(y, 1))
+        let clampedWidth = max(0, min(width, 1 - clampedX))
+        let clampedHeight = max(0, min(height, 1 - clampedY))
+        guard clampedWidth > 0, clampedHeight > 0 else { return .zero }
+        return CGRect(x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight)
     }
 }
