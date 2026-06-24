@@ -169,7 +169,6 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             self.pendingDetectionSample = nil
             self.detectionStateLock.unlock()
             self.remoteStateLock.lock()
-            self.remoteInFlight = false
             self.pendingRemoteSample = nil
             self.remoteStateLock.unlock()
         }
@@ -177,15 +176,17 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func acceptRemoteFrame(_ processed: RemoteProcessedFrame) {
         let sample = frameStore.update(processed.buffer)
-        boxStore.update(DetectionSnapshot(
+        let snapshot = DetectionSnapshot(
             frameID: sample.id,
-            boxes: [],
+            boxes: processed.snapshot.boxes,
             frameSize: sample.frameSize,
             capturedAt: sample.capturedAt,
             guardMode: processed.snapshot.guardMode,
             armed: processed.snapshot.armed,
             blackoutWholeFrame: processed.snapshot.blackoutWholeFrame
-        ))
+        )
+        boxStore.update(snapshot)
+        logDetections(snapshot.boxes, snapshot: snapshot)
         completeRemoteDetection()
     }
 

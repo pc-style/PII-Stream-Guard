@@ -78,8 +78,18 @@ enum FrameCodec {
         if snapshot.blackoutWholeFrame {
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         } else if maskMode == .blackout {
+            let frameBounds = CGRect(x: 0, y: 0, width: width, height: height)
             for box in snapshot.boxes {
-                context.fill(FrameMasker.pixelRect(from: box.normalizedRect, frameSize: CGSize(width: width, height: height)))
+                var rect = FrameMasker.pixelRect(
+                    from: box.normalizedRect,
+                    frameSize: CGSize(width: width, height: height)
+                )
+                if FrameMasker.usesBuiltInMasking(for: snapshot.guardMode) {
+                    rect = FrameMasker.builtInBlackoutRect(rect, within: frameBounds)
+                } else {
+                    rect = rect.insetBy(dx: -12, dy: -8).intersection(frameBounds)
+                }
+                context.fill(rect)
             }
         }
 
