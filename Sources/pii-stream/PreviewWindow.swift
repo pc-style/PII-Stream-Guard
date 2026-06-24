@@ -211,7 +211,8 @@ final class PreviewWindowController: NSWindowController {
     }
 
     private func tick() {
-        let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
+        let now = ProcessInfo.processInfo.systemUptime
+        let targetTime = presentation == .screenOverlay ? now : now - guardMode.renderDelay
         let delayedSample = frameStore.sample(atOrBefore: targetTime)
         let freshSnapshot = boxStore.snapshot(atOrBefore: targetTime, maxAge: guardMode.maxSnapshotAge)
         let sample: FrameSample
