@@ -11,6 +11,7 @@ public struct WatchOptions {
     var remote: String?
     var token: String?
     var placement: WindowPlacement = .center
+    var previewPresentation: PreviewPresentation = .window
 
     var processingOptions: FrameProcessingOptions {
         FrameProcessingOptions(
@@ -121,6 +122,14 @@ public enum CLI {
                     throw CLIError.invalidValue("--position")
                 }
                 options.placement = placement
+            case "--preview":
+                i += 1
+                guard i < args.count, let presentation = PreviewPresentation(rawValue: args[i]) else {
+                    throw CLIError.invalidValue("--preview")
+                }
+                options.previewPresentation = presentation
+            case "--overlay":
+                options.previewPresentation = .screenOverlay
             case "--remote":
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--remote") }
@@ -340,6 +349,8 @@ public enum CLI {
       --position PLACEMENT
                      Preview window placement: center, left, or right
                      (default: center)
+      --preview MODE Preview mode: window or overlay (default: window)
+      --overlay      Alias for --preview overlay
       --remote HOST:PORT
                      Send captured frames to a remote processor
       --token TOKEN   Shared token for remote processing

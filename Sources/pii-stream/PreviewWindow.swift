@@ -8,6 +8,8 @@ final class PreviewView: NSView {
     private let frameLayer = CALayer()
     private let overlayLayer = CALayer()
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let showsCapturedFrame: Bool
+    private let mapsOverlayToBounds: Bool
 
     var boxes: [PIIBox] = []
     var frameSize: CGSize = .zero
@@ -15,10 +17,12 @@ final class PreviewView: NSView {
     var blackoutWholeFrame = false
     var usesBuiltInMasking = true
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, showsCapturedFrame: Bool = true, mapsOverlayToBounds: Bool = false) {
+        self.showsCapturedFrame = showsCapturedFrame
+        self.mapsOverlayToBounds = mapsOverlayToBounds
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.backgroundColor = showsCapturedFrame ? NSColor.black.cgColor : NSColor.clear.cgColor
 
         frameLayer.contentsGravity = .resizeAspect
         frameLayer.frame = bounds
@@ -29,7 +33,9 @@ final class PreviewView: NSView {
         // CALayer defaults to bottom-left origin; flip so Vision→view math (top-left) maps correctly.
         overlayLayer.isGeometryFlipped = true
 
-        layer?.addSublayer(frameLayer)
+        if showsCapturedFrame {
+            layer?.addSublayer(frameLayer)
+        }
         layer?.addSublayer(overlayLayer)
     }
 
@@ -39,6 +45,7 @@ final class PreviewView: NSView {
     }
 
     func updateFrame(_ buffer: CVPixelBuffer) {
+        guard showsCapturedFrame else { return }
         let image = CIImage(cvPixelBuffer: buffer)
         guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return }
         DispatchQueue.main.async { [weak self] in
@@ -70,11 +77,24 @@ final class PreviewView: NSView {
         guard frameSize.width > 0, frameSize.height > 0 else { return }
 
         let viewBounds = bounds
-        let scale = min(viewBounds.width / frameSize.width, viewBounds.height / frameSize.height)
-        let drawnWidth = frameSize.width * scale
-        let drawnHeight = frameSize.height * scale
-        let offsetX = (viewBounds.width - drawnWidth) / 2
-        let offsetY = (viewBounds.height - drawnHeight) / 2
+        let scaleX: CGFloat
+        let scaleY: CGFloat
+        let offsetX: CGFloat
+        let offsetY: CGFloat
+        if mapsOverlayToBounds {
+            scaleX = viewBounds.width / frameSize.width
+            scaleY = viewBounds.height / frameSize.height
+            offsetX = 0
+            offsetY = 0
+        } else {
+            let scale = min(viewBounds.width / frameSize.width, viewBounds.height / frameSize.height)
+            let drawnWidth = frameSize.width * scale
+            let drawnHeight = frameSize.height * scale
+            scaleX = scale
+            scaleY = scale
+            offsetX = (viewBounds.width - drawnWidth) / 2
+            offsetY = (viewBounds.height - drawnHeight) / 2
+        }
 
         if blackoutWholeFrame {
             let blackoutLayer = CALayer()
@@ -87,10 +107,10 @@ final class PreviewView: NSView {
         for box in boxes {
             let rect = FrameMasker.pixelRect(from: box.normalizedRect, frameSize: frameSize)
             var scaled = CGRect(
-                x: offsetX + rect.origin.x * scale,
-                y: offsetY + rect.origin.y * scale,
-                width: rect.width * scale,
-                height: rect.height * scale
+                x: offsetX + rect.origin.x * scaleX,
+                y: offsetY + rect.origin.y * scaleY,
+                width: rect.width * scaleX,
+                height: rect.height * scaleY
             )
             if maskMode == .blackout, usesBuiltInMasking {
                 scaled = FrameMasker.builtInBlackoutRect(scaled, within: viewBounds)
@@ -129,6 +149,7 @@ final class PreviewWindowController: NSWindowController {
     private let frameStore: FrameStore
     private let boxStore: BoxStore
     private let onModeChanged: (GuardMode) -> Void
+    private let presentation: PreviewPresentation
     private let recorder = PreviewRecorder()
     private let statusLabel = NSTextField(labelWithString: "")
     private var timer: Timer?
@@ -143,6 +164,7 @@ final class PreviewWindowController: NSWindowController {
         boxStore: BoxStore,
         windowSize: CGSize,
         initialMode: GuardMode,
+        presentation: PreviewPresentation = .window,
         placement: WindowPlacement = .center,
         onModeChanged: @escaping (GuardMode) -> Void
     ) {
@@ -150,27 +172,18 @@ final class PreviewWindowController: NSWindowController {
         self.boxStore = boxStore
         self.guardMode = initialMode
         self.onModeChanged = onModeChanged
-        previewView = PreviewView(frame: NSRect(origin: .zero, size: windowSize))
-
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
+        self.presentation = presentation
+        previewView = PreviewView(
+            frame: NSRect(origin: .zero, size: windowSize),
+            showsCapturedFrame: presentation.showsCapturedFrame,
+            mapsOverlayToBounds: presentation.mapsOverlayToBounds
         )
-        window.title = "PII-Stream Preview"
-        window.sharingType = .none
-        window.contentView = NSView()
-        // Place the window per the chosen placement (default: centered).
-        if let screen = NSScreen.main, let frame = placement.frame(on: screen) {
-            window.setFrame(frame, display: true)
-        } else {
-            window.center()
-        }
-        window.makeKeyAndOrderFront(nil)
+
+        let window = Self.makeWindow(presentation: presentation, windowSize: windowSize, placement: placement)
 
         super.init(window: window)
-        window.contentView = makeContentView(windowSize: windowSize)
+        window.contentView = makeContentView(windowSize: window.frame.size)
+        window.makeKeyAndOrderFront(nil)
         startDisplayLoop()
     }
 
@@ -198,7 +211,8 @@ final class PreviewWindowController: NSWindowController {
     }
 
     private func tick() {
-        let targetTime = ProcessInfo.processInfo.systemUptime - guardMode.renderDelay
+        let now = ProcessInfo.processInfo.systemUptime
+        let targetTime = presentation == .screenOverlay ? now : now - guardMode.renderDelay
         let delayedSample = frameStore.sample(atOrBefore: targetTime)
         let freshSnapshot = boxStore.snapshot(atOrBefore: targetTime, maxAge: guardMode.maxSnapshotAge)
         let sample: FrameSample
@@ -217,7 +231,7 @@ final class PreviewWindowController: NSWindowController {
                 capturedAt: sample.capturedAt,
                 guardMode: guardMode,
                 armed: true,
-                blackoutWholeFrame: true
+                blackoutWholeFrame: presentation != .screenOverlay
             )
         }
         if sample.id != lastDisplayedFrameID {
@@ -258,6 +272,12 @@ final class PreviewWindowController: NSWindowController {
     }
 
     private func makeContentView(windowSize: CGSize) -> NSView {
+        guard presentation == .window else {
+            previewView.frame = NSRect(origin: .zero, size: windowSize)
+            previewView.autoresizingMask = [.width, .height]
+            return previewView
+        }
+
         let modeControl = NSSegmentedControl(
             labels: GuardMode.allCases.map(\.title),
             trackingMode: .selectOne,
@@ -360,5 +380,60 @@ final class PreviewWindowController: NSWindowController {
         let width = Int((rect.width * 1000).rounded())
         let height = Int((rect.height * 1000).rounded())
         return "\(x),\(y),\(width),\(height)"
+    }
+
+    private static func makeWindow(
+        presentation: PreviewPresentation,
+        windowSize: CGSize,
+        placement: WindowPlacement
+    ) -> NSWindow {
+        switch presentation {
+        case .window:
+            let window = NSWindow(
+                contentRect: NSRect(origin: .zero, size: windowSize),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "PII-Stream Preview"
+            window.sharingType = .none
+            window.contentView = NSView()
+            if let screen = NSScreen.main, let frame = placement.frame(on: screen) {
+                window.setFrame(frame, display: true)
+            } else {
+                window.center()
+            }
+            return window
+        case .screenOverlay:
+            let screenFrame = NSScreen.main?.frame ?? NSRect(origin: .zero, size: windowSize)
+            let window = NSWindow(
+                contentRect: screenFrame,
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "PII-Stream Overlay"
+            window.sharingType = .none
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.ignoresMouseEvents = true
+            window.level = .screenSaver
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            return window
+        }
+    }
+}
+
+public enum PreviewPresentation: String {
+    case window
+    case screenOverlay = "overlay"
+
+    var showsCapturedFrame: Bool {
+        self == .window
+    }
+
+    var mapsOverlayToBounds: Bool {
+        self == .screenOverlay
     }
 }
