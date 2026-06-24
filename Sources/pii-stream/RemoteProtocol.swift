@@ -76,11 +76,17 @@ struct RemoteRect: Codable {
 
     var sanitizedNormalizedRect: CGRect {
         guard x.isFinite, y.isFinite, width.isFinite, height.isFinite else { return .zero }
-        let clampedX = max(0, min(x, 1))
-        let clampedY = max(0, min(y, 1))
-        let clampedWidth = max(0, min(width, 1 - clampedX))
-        let clampedHeight = max(0, min(height, 1 - clampedY))
+        let minX = min(x, x + width)
+        let maxX = max(x, x + width)
+        let minY = min(y, y + height)
+        let maxY = max(y, y + height)
+        let clampedMinX = max(0, min(minX, 1))
+        let clampedMaxX = max(0, min(maxX, 1))
+        let clampedMinY = max(0, min(minY, 1))
+        let clampedMaxY = max(0, min(maxY, 1))
+        let clampedWidth = clampedMaxX - clampedMinX
+        let clampedHeight = clampedMaxY - clampedMinY
         guard clampedWidth > 0, clampedHeight > 0 else { return .zero }
-        return CGRect(x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight)
+        return CGRect(x: clampedMinX, y: clampedMinY, width: clampedWidth, height: clampedHeight)
     }
 }
