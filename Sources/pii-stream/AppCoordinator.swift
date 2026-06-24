@@ -39,6 +39,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             boxStore: boxStore,
             windowSize: CGSize(width: 1280, height: 800),
             initialMode: options.mode,
+            presentation: options.previewPresentation,
             placement: options.placement
         ) { [weak self] mode in
             self?.setMode(mode)
