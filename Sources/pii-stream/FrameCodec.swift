@@ -27,8 +27,6 @@ enum FrameCodecError: Error, LocalizedError {
 enum FrameCodec {
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private static let colorSpace = CGColorSpaceCreateDeviceRGB()
-    private static let boxPaddingHorizontal: CGFloat = 12
-    private static let boxPaddingVertical: CGFloat = 8
 
     static func jpegData(from buffer: CVPixelBuffer, quality: CGFloat = 0.72) throws -> Data {
         let image = CIImage(cvPixelBuffer: buffer)
@@ -81,7 +79,7 @@ enum FrameCodec {
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         } else if maskMode == .blackout {
             for box in snapshot.boxes {
-                context.fill(pixelRect(for: box.normalizedRect, width: width, height: height))
+                context.fill(FrameMasker.pixelRect(from: box.normalizedRect, frameSize: CGSize(width: width, height: height)))
             }
         }
 
@@ -132,12 +130,4 @@ enum FrameCodec {
         return buffer
     }
 
-    private static func pixelRect(for rect: CGRect, width: Int, height: Int) -> CGRect {
-        let x = rect.origin.x * CGFloat(width)
-        let y = (1 - rect.origin.y - rect.height) * CGFloat(height)
-        let w = rect.width * CGFloat(width)
-        let h = rect.height * CGFloat(height)
-        return CGRect(x: x, y: y, width: w, height: h)
-            .insetBy(dx: -boxPaddingHorizontal, dy: -boxPaddingVertical)
-    }
 }

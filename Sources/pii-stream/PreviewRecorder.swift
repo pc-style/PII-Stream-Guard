@@ -173,9 +173,9 @@ final class PreviewRecorder {
         }
 
         for box in boxes {
-            var rect = pixelRect(from: box.normalizedRect, width: CGFloat(width), height: CGFloat(height))
-            if maskMode == .blackout, usesBuiltInMasking(for: guardMode) {
-                rect = expandedBuiltInBlackoutRect(
+            var rect = FrameMasker.pixelRect(from: box.normalizedRect, frameSize: CGSize(width: width, height: height))
+            if maskMode == .blackout, FrameMasker.usesBuiltInMasking(for: guardMode) {
+                rect = FrameMasker.builtInBlackoutRect(
                     rect,
                     within: CGRect(x: 0, y: 0, width: width, height: height)
                 )
@@ -227,29 +227,6 @@ final class PreviewRecorder {
         metadataHandle?.write(Data("\n".utf8))
     }
 
-    private func pixelRect(from rect: CGRect, width: CGFloat, height: CGFloat) -> CGRect {
-        CGRect(
-            x: rect.origin.x * width,
-            y: (1 - rect.origin.y - rect.height) * height,
-            width: rect.width * width,
-            height: rect.height * height
-        )
-    }
-
-    private func expandedBuiltInBlackoutRect(_ rect: CGRect, within bounds: CGRect) -> CGRect {
-        let horizontalPadding = max(80, rect.width * 0.45)
-        let verticalPadding = max(10, rect.height * 1.2)
-        return rect
-            .insetBy(dx: -horizontalPadding, dy: -verticalPadding)
-            .intersection(bounds)
-    }
-
-    private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
-        switch mode {
-        case .lockdown, .standard, .lowLatency:
-            return true
-        }
-    }
 
     private func clear() {
         writer = nil

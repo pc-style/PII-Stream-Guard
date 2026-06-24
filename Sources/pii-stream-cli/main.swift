@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import pii_stream
 
 do {
     let command = try CLI.parse(CommandLine.arguments)

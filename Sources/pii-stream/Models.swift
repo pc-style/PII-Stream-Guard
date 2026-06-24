@@ -2,24 +2,24 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 
-enum PIIKind: String, Codable {
+public enum PIIKind: String, Codable {
     case email
     case phone
     case needle
 }
 
-struct PIIBox: Codable {
-    let kind: PIIKind
-    let matched: String
-    let confidence: Float
-    let normalizedRect: CGRect
-    let detectedAt: TimeInterval
+public struct PIIBox: Codable {
+    public let kind: PIIKind
+    public let matched: String
+    public let confidence: Float
+    public let normalizedRect: CGRect
+    public let detectedAt: TimeInterval
 
-    var identityKey: String {
+    public var identityKey: String {
         "\(kind.rawValue):\(Self.normalizedMatch(kind: kind, matched: matched))"
     }
 
-    static func normalizedMatch(kind: PIIKind, matched: String) -> String {
+    public static func normalizedMatch(kind: PIIKind, matched: String) -> String {
         switch kind {
         case .email, .needle:
             return matched.lowercased().filter { !$0.isWhitespace }

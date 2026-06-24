@@ -4,41 +4,7 @@ import CoreVideo
 import Foundation
 import Vision
 
-struct NormalizedText {
-    let normalized: String
-    let map: [String.Index]
-
-    static func build(from raw: String) -> NormalizedText {
-        var normalized = ""
-        var map: [String.Index] = []
-        for idx in raw.indices {
-            let ch = raw[idx]
-            if ch.isWhitespace { continue }
-            normalized.append(Character(String(ch).lowercased()))
-            map.append(idx)
-        }
-        return NormalizedText(normalized: normalized, map: map)
-    }
-
-    func originalRange(for needleRange: Range<String.Index>, in raw: String) -> Range<String.Index>? {
-        let startOffset = normalized.distance(from: normalized.startIndex, to: needleRange.lowerBound)
-        let endOffset = normalized.distance(from: normalized.startIndex, to: needleRange.upperBound) - 1
-        guard startOffset >= 0, endOffset >= startOffset, endOffset < map.count else { return nil }
-        let startIdx = map[startOffset]
-        let endIdx = map[endOffset]
-        return startIdx..<raw.index(after: endIdx)
-    }
-}
-
 struct VisionPIIDetector: PIIDetector {
-    private struct TextFragment {
-        let raw: String
-        let digits: String
-        let rect: CGRect
-        let confidence: Float
-        let detectedAt: TimeInterval
-    }
-
     let needles: [String]
     let checkEmail: Bool
     let checkPhone: Bool
@@ -47,16 +13,7 @@ struct VisionPIIDetector: PIIDetector {
     let minimumTextHeight: Float
     let enhanceLowContrast: Bool
 
-    private let emailRegex = try! NSRegularExpression(
-        pattern: "\\b[A-Z0-9._%+-]+\\s*@\\s*(?:[A-Z0-9-]+\\s*\\.\\s*)+[A-Z]{2,}\\b",
-        options: [.caseInsensitive]
-    )
-
-    private let phoneRegex = try! NSRegularExpression(
-        pattern: "(?<![A-Z0-9])(?:\\+\\s*\\d{1,3}[\\s.-]*)?(?:\\(\\s*\\d{3}\\s*\\)|\\d{3})[\\s.-]*\\d{3}[\\s.-]*\\d{4}(?![A-Z0-9])",
-        options: [.caseInsensitive]
-    )
-
+    private let classifier: PIIClassifier
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     init(
@@ -75,6 +32,7 @@ struct VisionPIIDetector: PIIDetector {
         self.maxPixelSize = maxPixelSize
         self.minimumTextHeight = minimumTextHeight
         self.enhanceLowContrast = enhanceLowContrast
+        classifier = PIIClassifier(needles: needles, checkEmail: checkEmail, checkPhone: checkPhone)
     }
 
     func detect(in pixelBuffer: CVPixelBuffer) -> [PIIBox] {
@@ -92,249 +50,20 @@ struct VisionPIIDetector: PIIDetector {
         }
 
         let now = ProcessInfo.processInfo.systemUptime
-        let normalizedNeedles = needles.map { $0.lowercased().filter { !$0.isWhitespace } }
-        var boxes: [PIIBox] = []
-        var fragments: [TextFragment] = []
-
-        for observation in request.results ?? [] {
-            for candidate in observation.topCandidates(3) {
-                let raw = candidate.string
-                let confidence = candidate.confidence
-                let candidateRect = observation.boundingBox
-                let digits = raw.filter(\.isNumber)
-                if (2...6).contains(digits.count) {
-                    fragments.append(TextFragment(
-                        raw: raw,
-                        digits: digits,
-                        rect: candidateRect,
-                        confidence: confidence,
-                        detectedAt: now
-                    ))
-                }
-
-                if checkEmail {
-                    collectEmailBoxes(
-                        from: raw,
-                        candidate: candidate,
-                        observation: observation,
-                        confidence: confidence,
-                        detectedAt: now,
-                        into: &boxes
-                    )
-                }
-
-                if checkPhone {
-                    collectPhoneBoxes(
-                        from: raw,
-                        candidate: candidate,
-                        observation: observation,
-                        confidence: confidence,
-                        detectedAt: now,
-                        into: &boxes
-                    )
-                }
-
-                let normText = NormalizedText.build(from: raw)
-                for (idx, needle) in normalizedNeedles.enumerated() where !needle.isEmpty {
-                    var searchStart = normText.normalized.startIndex
-                    while searchStart < normText.normalized.endIndex,
-                          let range = normText.normalized.range(of: needle, range: searchStart..<normText.normalized.endIndex) {
-                        if let originalRange = normText.originalRange(for: range, in: raw) {
-                            appendBox(
-                                kind: .needle,
-                                matched: needles[idx],
-                                confidence: confidence,
-                                detectedAt: now,
-                                raw: raw,
-                                originalRange: originalRange,
-                                candidate: candidate,
-                                observation: observation,
-                                into: &boxes
-                            )
-                        }
-                        searchStart = range.upperBound
+        let fragments = (request.results ?? []).flatMap { observation in
+            observation.topCandidates(3).map { candidate in
+                RecognizedTextFragment(
+                    raw: candidate.string,
+                    confidence: candidate.confidence,
+                    normalizedRect: observation.boundingBox,
+                    detectedAt: now,
+                    boundingBoxForRange: { range in
+                        try? candidate.boundingBox(for: range)?.boundingBox
                     }
-                }
+                )
             }
         }
-
-        if checkPhone {
-            collectSplitPhoneBoxes(from: fragments, into: &boxes)
-        }
-
-        return deduplicated(boxes)
-    }
-
-    private func collectEmailBoxes(
-        from raw: String,
-        candidate: VNRecognizedText,
-        observation: VNRecognizedTextObservation,
-        confidence: Float,
-        detectedAt: TimeInterval,
-        into boxes: inout [PIIBox]
-    ) {
-        let nsRange = NSRange(raw.startIndex..., in: raw)
-        for match in emailRegex.matches(in: raw, range: nsRange) {
-            guard let range = Range(match.range, in: raw) else { continue }
-            let matched = String(raw[range]).filter { !$0.isWhitespace }
-            appendBox(
-                kind: .email,
-                matched: matched,
-                confidence: confidence,
-                detectedAt: detectedAt,
-                raw: raw,
-                originalRange: range,
-                candidate: candidate,
-                observation: observation,
-                into: &boxes
-            )
-        }
-    }
-
-    private func collectPhoneBoxes(
-        from raw: String,
-        candidate: VNRecognizedText,
-        observation: VNRecognizedTextObservation,
-        confidence: Float,
-        detectedAt: TimeInterval,
-        into boxes: inout [PIIBox]
-    ) {
-        let nsRange = NSRange(raw.startIndex..., in: raw)
-        for match in phoneRegex.matches(in: raw, range: nsRange) {
-            guard let range = Range(match.range, in: raw),
-                  let matched = normalizedPhoneMatch(String(raw[range])) else {
-                continue
-            }
-            appendBox(
-                kind: .phone,
-                matched: matched,
-                confidence: confidence,
-                detectedAt: detectedAt,
-                raw: raw,
-                originalRange: range,
-                candidate: candidate,
-                observation: observation,
-                into: &boxes
-            )
-        }
-    }
-
-    private func appendBox(
-        kind: PIIKind,
-        matched: String,
-        confidence: Float,
-        detectedAt: TimeInterval,
-        raw: String,
-        originalRange: Range<String.Index>,
-        candidate: VNRecognizedText,
-        observation: VNRecognizedTextObservation,
-        into boxes: inout [PIIBox]
-    ) {
-        if let boxObs = try? candidate.boundingBox(for: originalRange) {
-            boxes.append(PIIBox(
-                kind: kind,
-                matched: matched,
-                confidence: confidence,
-                normalizedRect: boxObs.boundingBox,
-                detectedAt: detectedAt
-            ))
-            return
-        }
-
-        let padded = paddedRect(observation.boundingBox)
-        boxes.append(PIIBox(
-            kind: kind,
-            matched: matched,
-            confidence: confidence,
-            normalizedRect: padded,
-            detectedAt: detectedAt
-        ))
-    }
-
-    private func normalizedPhoneMatch(_ raw: String) -> String? {
-        let digits = raw.filter(\.isNumber)
-        guard digits.count >= 10, digits.count <= 15 else { return nil }
-        let hasLeadingPlus = raw.first { !$0.isWhitespace } == "+"
-        return hasLeadingPlus ? "+\(digits)" : digits
-    }
-
-    private func collectSplitPhoneBoxes(from fragments: [TextFragment], into boxes: inout [PIIBox]) {
-        let candidates = fragments
-            .filter { $0.digits.count == 3 || $0.digits.count == 4 }
-            .sorted {
-                if abs($0.rect.midY - $1.rect.midY) > 0.02 {
-                    return $0.rect.midY > $1.rect.midY
-                }
-                return $0.rect.minX < $1.rect.minX
-            }
-
-        guard candidates.count >= 3 else { return }
-
-        for i in 0..<(candidates.count - 2) {
-            let a = candidates[i]
-            let b = candidates[i + 1]
-            let c = candidates[i + 2]
-            guard a.digits.count == 3, b.digits.count == 3, c.digits.count == 4 else { continue }
-            guard sameTextRow(a.rect, b.rect), sameTextRow(b.rect, c.rect) else { continue }
-            guard reasonableSplitPhoneGap(a.rect, b.rect), reasonableSplitPhoneGap(b.rect, c.rect) else { continue }
-
-            boxes.append(PIIBox(
-                kind: .phone,
-                matched: a.digits + b.digits + c.digits,
-                confidence: min(a.confidence, b.confidence, c.confidence),
-                normalizedRect: a.rect.union(b.rect).union(c.rect),
-                detectedAt: max(a.detectedAt, b.detectedAt, c.detectedAt)
-            ))
-        }
-    }
-
-    private func sameTextRow(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
-        let tolerance = max(lhs.height, rhs.height) * 1.8 + 0.01
-        return abs(lhs.midY - rhs.midY) <= tolerance
-    }
-
-    private func reasonableSplitPhoneGap(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
-        let gap = rhs.minX - lhs.maxX
-        guard gap >= -0.01 else { return false }
-        return gap <= max(lhs.width, rhs.width) * 4 + 0.08
-    }
-
-    private func deduplicated(_ boxes: [PIIBox]) -> [PIIBox] {
-        var bestByKey: [String: PIIBox] = [:]
-        for box in boxes {
-            let key = "\(box.identityKey):\(coarseRectBucket(box.normalizedRect))"
-            if let existing = bestByKey[key], existing.confidence >= box.confidence {
-                continue
-            }
-            bestByKey[key] = box
-        }
-        return boxes.compactMap { box in
-            let key = "\(box.identityKey):\(coarseRectBucket(box.normalizedRect))"
-            guard bestByKey[key]?.confidence == box.confidence else { return nil }
-            let selected = bestByKey[key]
-            bestByKey[key] = nil
-            return selected
-        }
-    }
-
-    private func coarseRectBucket(_ rect: CGRect) -> String {
-        [
-            rect.origin.x,
-            rect.origin.y,
-            rect.width,
-            rect.height,
-        ]
-        .map { String(Int(($0 * 50).rounded())) }
-        .joined(separator: ",")
-    }
-
-    private func paddedRect(_ rect: CGRect, padding: CGFloat = 0.02) -> CGRect {
-        var r = rect
-        r.origin.x = max(0, r.origin.x - padding)
-        r.origin.y = max(0, r.origin.y - padding)
-        r.size.width = min(1 - r.origin.x, r.size.width + padding * 2)
-        r.size.height = min(1 - r.origin.y, r.size.height + padding * 2)
-        return r
+        return classifier.classify(fragments)
     }
 
     private func prepareForOCR(_ buffer: CVPixelBuffer) -> CVPixelBuffer {

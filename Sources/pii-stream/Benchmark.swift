@@ -3,14 +3,7 @@ import CoreImage
 import CoreVideo
 import Foundation
 
-struct DetectorSettings: Codable, Equatable {
-    var accurate: Bool = false
-    var maxPixelSize: CGFloat = 1440
-    var minimumTextHeight: Float = 0.012
-    var enhanceLowContrast: Bool = false
-}
-
-struct BenchmarkOptions {
+public struct BenchmarkOptions {
     var needles: [String] = []
     var checkEmail: Bool = true
     var checkPhone: Bool = true
@@ -19,14 +12,14 @@ struct BenchmarkOptions {
     var csvPath: String?
 }
 
-struct BenchmarkSummary: Codable {
+public struct BenchmarkSummary: Codable {
     let capturedFrames: Int
     let sampledFrames: Int
     let duration: Double
     let results: [BenchmarkResult]
 }
 
-struct BenchmarkResult: Codable {
+public struct BenchmarkResult: Codable {
     let resolution: String
     let width: Int
     let height: Int
@@ -43,7 +36,7 @@ struct BenchmarkResult: Codable {
     let matchedKinds: [String]
 }
 
-final class BenchmarkRunner {
+public final class BenchmarkRunner {
     private struct ResolutionCase {
         let width: Int
         let height: Int
@@ -75,11 +68,11 @@ final class BenchmarkRunner {
     private let targetFpsValues: [Double] = [10, 30, 60]
     private let detectorSettings = DetectorSettings()
 
-    init(options: BenchmarkOptions) {
+    public init(options: BenchmarkOptions) {
         self.options = options
     }
 
-    func run() async throws -> BenchmarkSummary {
+    public func run() async throws -> BenchmarkSummary {
         let capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] _ in
             self?.capturedFrames += 1
         }
@@ -104,7 +97,7 @@ final class BenchmarkRunner {
         )
     }
 
-    func write(_ summary: BenchmarkSummary) throws {
+    public func write(_ summary: BenchmarkSummary) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(summary)
@@ -243,10 +236,10 @@ final class BenchmarkRunner {
     }
 }
 
-enum BenchmarkError: Error, LocalizedError {
+public enum BenchmarkError: Error, LocalizedError {
     case noFrames
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .noFrames:
             return "No screen frames captured within 10 seconds. Check Screen Recording permission."
