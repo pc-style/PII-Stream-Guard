@@ -79,7 +79,8 @@ final class BoxStore {
 final class FrameStore {
     private let lock = NSLock()
     private var samples: [FrameSample] = []
-    private let maxSampleAge: TimeInterval = 2.0
+    private let maxSampleAge: TimeInterval = 0.75
+    private let maxSamples = 60
     private var nextFrameID: UInt64 = 1
 
     @discardableResult
@@ -100,6 +101,9 @@ final class FrameStore {
         let expiredCount = samples.prefix { $0.capturedAt < cutoff }.count
         if expiredCount > 0 {
             samples.removeFirst(expiredCount)
+        }
+        if samples.count > maxSamples {
+            samples.removeFirst(samples.count - maxSamples)
         }
         return sample
     }

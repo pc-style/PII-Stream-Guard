@@ -85,7 +85,7 @@ final class PreviewView: NSView {
         }
 
         for box in boxes {
-            let rect = visionRectToView(box.normalizedRect, frameSize: frameSize)
+            let rect = FrameMasker.pixelRect(from: box.normalizedRect, frameSize: frameSize)
             var scaled = CGRect(
                 x: offsetX + rect.origin.x * scale,
                 y: offsetY + rect.origin.y * scale,
@@ -93,7 +93,7 @@ final class PreviewView: NSView {
                 height: rect.height * scale
             )
             if maskMode == .blackout, usesBuiltInMasking {
-                scaled = expandedBuiltInBlackoutRect(scaled, within: viewBounds)
+                scaled = FrameMasker.builtInBlackoutRect(scaled, within: viewBounds)
             }
 
             let boxLayer = CALayer()
@@ -121,22 +121,7 @@ final class PreviewView: NSView {
         }
     }
 
-    /// Vision normalized coords: origin bottom-left → view coords: origin top-left.
-    private func visionRectToView(_ rect: CGRect, frameSize: CGSize) -> CGRect {
-        let x = rect.origin.x * frameSize.width
-        let y = (1 - rect.origin.y - rect.height) * frameSize.height
-        let w = rect.width * frameSize.width
-        let h = rect.height * frameSize.height
-        return CGRect(x: x, y: y, width: w, height: h)
-    }
 
-    private func expandedBuiltInBlackoutRect(_ rect: CGRect, within bounds: CGRect) -> CGRect {
-        let horizontalPadding = max(80, rect.width * 0.45)
-        let verticalPadding = max(10, rect.height * 1.2)
-        return rect
-            .insetBy(dx: -horizontalPadding, dy: -verticalPadding)
-            .intersection(bounds)
-    }
 }
 
 final class PreviewWindowController: NSWindowController {
@@ -150,6 +135,8 @@ final class PreviewWindowController: NSWindowController {
     private var guardMode: GuardMode
     private var maskMode: MaskMode = .boundingBox
     private var isRecording = false
+    private var lastDisplayedFrameID: UInt64?
+    private var lastOverlaySignature: String?
 
     init(
         frameStore: FrameStore,
@@ -233,14 +220,29 @@ final class PreviewWindowController: NSWindowController {
                 blackoutWholeFrame: true
             )
         }
-        previewView.updateFrame(sample.pixelBuffer)
-        previewView.updateOverlay(
-            boxes: snapshot.boxes,
+        if sample.id != lastDisplayedFrameID {
+            previewView.updateFrame(sample.pixelBuffer)
+            lastDisplayedFrameID = sample.id
+        }
+
+        let usesBuiltInMasking = FrameMasker.usesBuiltInMasking(for: guardMode)
+        let overlaySignature = signature(
+            for: snapshot,
             frameSize: sample.frameSize,
+            viewBounds: previewView.bounds,
             maskMode: maskMode,
-            blackoutWholeFrame: snapshot.blackoutWholeFrame,
-            usesBuiltInMasking: usesBuiltInMasking(for: guardMode)
+            usesBuiltInMasking: usesBuiltInMasking
         )
+        if overlaySignature != lastOverlaySignature {
+            previewView.updateOverlay(
+                boxes: snapshot.boxes,
+                frameSize: sample.frameSize,
+                maskMode: maskMode,
+                blackoutWholeFrame: snapshot.blackoutWholeFrame,
+                usesBuiltInMasking: usesBuiltInMasking
+            )
+            lastOverlaySignature = overlaySignature
+        }
 
         if isRecording {
             recorder.append(
@@ -297,11 +299,13 @@ final class PreviewWindowController: NSWindowController {
         let modes = GuardMode.allCases
         guard sender.selectedSegment >= 0, sender.selectedSegment < modes.count else { return }
         guardMode = modes[sender.selectedSegment]
+        lastOverlaySignature = nil
         onModeChanged(guardMode)
     }
 
     @objc private func maskChanged(_ sender: NSSegmentedControl) {
         maskMode = sender.selectedSegment == 1 ? .blackout : .boundingBox
+        lastOverlaySignature = nil
     }
 
     @objc private func recordChanged(_ sender: NSButton) {
@@ -327,223 +331,27 @@ final class PreviewWindowController: NSWindowController {
         statusLabel.stringValue = "\(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  armed \(armed ? "yes" : "no")  boxes \(boxCount)"
     }
 
-    private func usesBuiltInMasking(for mode: GuardMode) -> Bool {
-        switch mode {
-        case .lockdown, .standard, .lowLatency:
-            return true
-        }
-    }
-}
 
-final class AppCoordinator: NSObject, NSApplicationDelegate {
-    let frameStore = FrameStore()
-    private let captureFrameStore: FrameStore
-    let boxStore = BoxStore()
-    let options: WatchOptions
-
-    private var capture: ScreenCaptureManager?
-    private var preview: PreviewWindowController?
-    private let detectionQueue = DispatchQueue(label: "pii-stream.detection")
-    private var processor: FrameProcessor
-    private var remoteClient: RemoteFrameClient?
-    private var guardMode: GuardMode
-    private var lastDetectionTime: TimeInterval = 0
-    private var lastLoggedSignature: String = ""
-    private let detectionStateLock = NSLock()
-    private var detectionInFlight = false
-    private var pendingDetectionSample: FrameSample?
-
-    init(options: WatchOptions) {
-        self.options = options
-        captureFrameStore = options.remote == nil ? frameStore : FrameStore()
-        guardMode = options.mode
-        processor = FrameProcessor(options: options.processingOptions)
-        super.init()
-    }
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.activate(ignoringOtherApps: true)
-
-        preview = PreviewWindowController(
-            frameStore: frameStore,
-            boxStore: boxStore,
-            windowSize: CGSize(width: 1280, height: 800),
-            initialMode: options.mode,
-            placement: options.placement
-        ) { [weak self] mode in
-            self?.setMode(mode)
-        }
-
-        if let remote = options.remote {
-            guard let token = options.token else {
-                fputs("Remote watch requires --token TOKEN.\n", stderr)
-                NSApp.terminate(nil)
-                return
-            }
-            do {
-                remoteClient = try RemoteFrameClient(
-                    hostPort: remote,
-                    token: token,
-                    config: options.processingOptions,
-                    onResponse: { [weak self] processed in
-                        self?.acceptRemoteFrame(processed)
-                    },
-                    onDisconnect: { [weak self] in
-                        self?.failClosed()
-                    }
-                )
-                remoteClient?.start()
-            } catch {
-                fputs("\(error.localizedDescription)\n", stderr)
-                NSApp.terminate(nil)
-                return
-            }
-        }
-
-        capture = ScreenCaptureManager(frameStore: captureFrameStore) { [weak self] sample in
-            self?.scheduleDetectionIfNeeded(sample: sample)
-        }
-
-        Task {
-            do {
-                try await capture?.start()
-            } catch {
-                fputs("Failed to start screen capture: \(error.localizedDescription)\n", stderr)
-                NSApp.terminate(nil)
-            }
-        }
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
-    }
-
-    private func scheduleDetectionIfNeeded(sample: FrameSample) {
-        if options.remote != nil {
-            if shouldStartDetectionNow() {
-                lastDetectionTime = ProcessInfo.processInfo.systemUptime
-                remoteClient?.send(sample: sample)
-            }
-            return
-        }
-
-        detectionStateLock.lock()
-        if detectionInFlight {
-            pendingDetectionSample = sample
-            detectionStateLock.unlock()
-            return
-        }
-        detectionInFlight = true
-        detectionStateLock.unlock()
-
-        detectionQueue.async { [weak self] in
-            guard let self else { return }
-            var sampleToProcess: FrameSample? = sample
-            while let current = sampleToProcess {
-                let age = ProcessInfo.processInfo.systemUptime - current.capturedAt
-                if age <= self.guardMode.maxDetectionInputAge, self.shouldStartDetectionNow() {
-                    self.lastDetectionTime = ProcessInfo.processInfo.systemUptime
-                    self.detect(sample: current)
-                }
-
-                self.detectionStateLock.lock()
-                sampleToProcess = self.pendingDetectionSample
-                self.pendingDetectionSample = nil
-                if sampleToProcess == nil {
-                    self.detectionInFlight = false
-                }
-                self.detectionStateLock.unlock()
-            }
-        }
-    }
-
-    private func shouldStartDetectionNow() -> Bool {
-        let detectionFPS = options.fps ?? guardMode.detectionFPS
-        guard detectionFPS > 0 else { return true }
-        let interval = 1.0 / detectionFPS
-        return ProcessInfo.processInfo.systemUptime - lastDetectionTime >= interval
-    }
-
-    private func detect(sample: FrameSample) {
-        guard let processed = processor.process(sample: sample) else { return }
-        boxStore.update(processed.snapshot)
-        logDetections(processed.detectedBoxes, snapshot: processed.snapshot)
-    }
-
-    private func setMode(_ mode: GuardMode) {
-        detectionQueue.async { [weak self] in
-            guard let self else { return }
-            self.guardMode = mode
-            var updated = self.options.processingOptions
-            updated.mode = mode
-            self.processor.updateOptions(updated)
-            self.remoteClient?.updateConfig(updated)
-            self.lastDetectionTime = 0
-            self.detectionStateLock.lock()
-            self.detectionInFlight = false
-            self.pendingDetectionSample = nil
-            self.detectionStateLock.unlock()
-        }
-    }
-
-    private func acceptRemoteFrame(_ processed: RemoteProcessedFrame) {
-        let sample = frameStore.update(processed.buffer)
-        boxStore.update(DetectionSnapshot(
-            frameID: sample.id,
-            boxes: [],
-            frameSize: sample.frameSize,
-            capturedAt: sample.capturedAt,
-            guardMode: processed.snapshot.guardMode,
-            armed: processed.snapshot.armed,
-            blackoutWholeFrame: processed.snapshot.blackoutWholeFrame
-        ))
-    }
-
-    private func failClosed() {
-        boxStore.update(DetectionSnapshot(
-            frameID: 0,
-            boxes: [],
-            frameSize: .zero,
-            capturedAt: ProcessInfo.processInfo.systemUptime,
-            guardMode: guardMode,
-            armed: true,
-            blackoutWholeFrame: true
-        ))
-    }
-
-    private func logDetections(_ boxes: [PIIBox], snapshot: DetectionSnapshot) {
-        guard !boxes.isEmpty else {
-            lastLoggedSignature = ""
-            return
-        }
-        let signature = boxes.map {
-            "\($0.kind.rawValue):len:\($0.matched.count):rect:\(rectBucket(for: $0.normalizedRect))"
-        }.sorted().joined(separator: "|")
-            + "|\(snapshot.guardMode.rawValue)|armed:\(snapshot.armed)"
-        guard signature != lastLoggedSignature else { return }
-        lastLoggedSignature = signature
-
-        for box in boxes {
-            let payload: [String: Any] = [
-                "frameID": snapshot.frameID,
-                "kind": box.kind.rawValue,
-                "matchedLength": box.matched.count,
-                "confidence": box.confidence,
-                "detectedAt": box.detectedAt,
-                "guardMode": snapshot.guardMode.rawValue,
-                "armed": snapshot.armed,
-                "rect": [
-                    "x": box.normalizedRect.origin.x,
-                    "y": box.normalizedRect.origin.y,
-                    "width": box.normalizedRect.width,
-                    "height": box.normalizedRect.height,
-                ],
-            ]
-            if let data = try? JSONSerialization.data(withJSONObject: payload),
-               let line = String(data: data, encoding: .utf8) {
-                print(line)
-            }
-        }
+    private func signature(
+        for snapshot: DetectionSnapshot,
+        frameSize: CGSize,
+        viewBounds: CGRect,
+        maskMode: MaskMode,
+        usesBuiltInMasking: Bool
+    ) -> String {
+        let boxSignature = snapshot.boxes.map { box in
+            "\(box.kind.rawValue):\(rectBucket(for: box.normalizedRect))"
+        }.joined(separator: "|")
+        return [
+            "size:\(Int(frameSize.width))x\(Int(frameSize.height))",
+            "bounds:\(Int(viewBounds.width))x\(Int(viewBounds.height))",
+            "mode:\(snapshot.guardMode.rawValue)",
+            "mask:\(maskMode.rawValue)",
+            "armed:\(snapshot.armed)",
+            "blackout:\(snapshot.blackoutWholeFrame)",
+            "builtin:\(usesBuiltInMasking)",
+            boxSignature,
+        ].joined(separator: ";")
     }
 
     private func rectBucket(for rect: CGRect) -> String {
@@ -552,428 +360,5 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         let width = Int((rect.width * 1000).rounded())
         let height = Int((rect.height * 1000).rounded())
         return "\(x),\(y),\(width),\(height)"
-    }
-}
-
-enum WindowPlacement: String {
-    case center
-    case left
-    case right
-
-    /// The window frame for this placement on the given screen, or nil to
-    /// fall back to the default centered placement.
-    func frame(on screen: NSScreen) -> NSRect? {
-        let vf = screen.visibleFrame
-        switch self {
-        case .center:
-            return nil
-        case .left:
-            let halfWidth = (vf.width / 2).rounded(.down)
-            return NSRect(x: vf.minX, y: vf.minY, width: halfWidth, height: vf.height)
-        case .right:
-            let halfWidth = (vf.width / 2).rounded(.down)
-            return NSRect(x: vf.maxX - halfWidth, y: vf.minY, width: halfWidth, height: vf.height)
-        }
-    }
-}
-
-struct WatchOptions {
-    var needles: [String] = []
-    var checkEmail: Bool = true
-    var checkPhone: Bool = true
-    var fps: Double?
-    var mode: GuardMode = .standard
-    var settingsOverride: DetectorSettings?
-    var remote: String?
-    var token: String?
-    var placement: WindowPlacement = .center
-
-    var processingOptions: FrameProcessingOptions {
-        FrameProcessingOptions(
-            needles: needles,
-            checkEmail: checkEmail,
-            checkPhone: checkPhone,
-            fps: fps,
-            mode: mode,
-            settingsOverride: settingsOverride
-        )
-    }
-}
-
-struct ServeOptions {
-    var host: String = "127.0.0.1"
-    var port: UInt16 = 8765
-    var token: String?
-}
-
-enum CLI {
-    static func parse(_ args: [String]) throws -> Command {
-        if args.contains(where: { $0 == "--help" || $0 == "-h" }) {
-            throw CLIError.help
-        }
-        guard args.count >= 2 else {
-            throw CLIError.usage
-        }
-
-        switch args[1] {
-        case "watch":
-            return .watch(try parseWatchOptions(Array(args.dropFirst(2))))
-        case "serve":
-            return .serve(try parseServeOptions(Array(args.dropFirst(2))))
-        case "benchmark":
-            return .benchmark(try parseBenchmarkOptions(Array(args.dropFirst(2))))
-        case "detect-image":
-            return .detectImage(try parseDetectImageOptions(Array(args.dropFirst(2))))
-        default:
-            throw CLIError.usage
-        }
-    }
-
-    private static func parseWatchOptions(_ args: [String]) throws -> WatchOptions {
-        var options = WatchOptions()
-        var settingsOverride: DetectorSettings?
-        var i = 0
-        while i < args.count {
-            switch args[i] {
-            case "--needle":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--needle") }
-                options.needles.append(args[i])
-            case "--no-email":
-                options.checkEmail = false
-            case "--no-phone":
-                options.checkPhone = false
-            case "--fps":
-                i += 1
-                guard i < args.count, let fps = Double(args[i]), fps > 0 else {
-                    throw CLIError.invalidValue("--fps")
-                }
-                options.fps = fps
-            case "--mode":
-                i += 1
-                guard i < args.count, let mode = parseGuardMode(args[i]) else {
-                    throw CLIError.invalidValue("--mode")
-                }
-                options.mode = mode
-            case "--accurate":
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.accurate = true
-                settingsOverride = settings
-            case "--min-text-height":
-                i += 1
-                guard i < args.count, let value = Float(args[i]), value > 0, value < 1 else {
-                    throw CLIError.invalidValue("--min-text-height")
-                }
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.minimumTextHeight = value
-                settingsOverride = settings
-            case "--max-pixel-size":
-                i += 1
-                guard i < args.count, let value = Double(args[i]), value > 0 else {
-                    throw CLIError.invalidValue("--max-pixel-size")
-                }
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.maxPixelSize = CGFloat(value)
-                settingsOverride = settings
-            case "--enhance-low-contrast":
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.enhanceLowContrast = true
-                settingsOverride = settings
-            case "--position":
-                i += 1
-                guard i < args.count, let placement = WindowPlacement(rawValue: args[i]) else {
-                    throw CLIError.invalidValue("--position")
-                }
-                options.placement = placement
-            case "--remote":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--remote") }
-                options.remote = args[i]
-            case "--token":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--token") }
-                options.token = args[i]
-            default:
-                throw CLIError.unknownFlag(args[i])
-            }
-            i += 1
-        }
-        options.settingsOverride = settingsOverride
-        return options
-    }
-
-    private static func parseServeOptions(_ args: [String]) throws -> ServeOptions {
-        var options = ServeOptions()
-        var i = 0
-        while i < args.count {
-            switch args[i] {
-            case "--host":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--host") }
-                options.host = args[i]
-            case "--port":
-                i += 1
-                guard i < args.count, let port = UInt16(args[i]), port > 0 else {
-                    throw CLIError.invalidValue("--port")
-                }
-                options.port = port
-            case "--token":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--token") }
-                options.token = args[i]
-            default:
-                throw CLIError.unknownFlag(args[i])
-            }
-            i += 1
-        }
-        return options
-    }
-
-    private static func parseDetectImageOptions(_ args: [String]) throws -> DetectImageOptions {
-        var imagePath: String?
-        var needles: [String] = []
-        var checkEmail = true
-        var checkPhone = true
-        var mode: GuardMode = .standard
-        var settingsOverride: DetectorSettings?
-        var i = 0
-        while i < args.count {
-            switch args[i] {
-            case "--image":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--image") }
-                imagePath = args[i]
-            case "--needle":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--needle") }
-                needles.append(args[i])
-            case "--json":
-                break
-            case "--no-email":
-                checkEmail = false
-            case "--no-phone":
-                checkPhone = false
-            case "--mode":
-                i += 1
-                guard i < args.count, let parsed = parseGuardMode(args[i]) else {
-                    throw CLIError.invalidValue("--mode")
-                }
-                mode = parsed
-            case "--accurate":
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.accurate = true
-                settingsOverride = settings
-            case "--min-text-height":
-                i += 1
-                guard i < args.count, let value = Float(args[i]), value > 0, value < 1 else {
-                    throw CLIError.invalidValue("--min-text-height")
-                }
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.minimumTextHeight = value
-                settingsOverride = settings
-            case "--max-pixel-size":
-                i += 1
-                guard i < args.count, let value = Double(args[i]), value > 0 else {
-                    throw CLIError.invalidValue("--max-pixel-size")
-                }
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.maxPixelSize = CGFloat(value)
-                settingsOverride = settings
-            case "--enhance-low-contrast":
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.enhanceLowContrast = true
-                settingsOverride = settings
-            default:
-                throw CLIError.unknownFlag(args[i])
-            }
-            i += 1
-        }
-
-        guard let imagePath else { throw CLIError.missingValue("--image") }
-        return DetectImageOptions(
-            imagePath: imagePath,
-            needles: needles,
-            checkEmail: checkEmail,
-            checkPhone: checkPhone,
-            mode: mode,
-            settingsOverride: settingsOverride
-        )
-    }
-
-    private static func parseBenchmarkOptions(_ args: [String]) throws -> BenchmarkOptions {
-        var options = BenchmarkOptions()
-        var i = 0
-        while i < args.count {
-            switch args[i] {
-            case "--needle":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--needle") }
-                options.needles.append(args[i])
-            case "--no-email":
-                options.checkEmail = false
-            case "--no-phone":
-                options.checkPhone = false
-            case "--duration":
-                i += 1
-                guard i < args.count, let duration = Double(args[i]), duration > 0 else {
-                    throw CLIError.invalidValue("--duration")
-                }
-                options.duration = duration
-            case "--output":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--output") }
-                options.outputPath = args[i]
-            case "--csv":
-                i += 1
-                guard i < args.count else { throw CLIError.missingValue("--csv") }
-                options.csvPath = args[i]
-            default:
-                throw CLIError.unknownFlag(args[i])
-            }
-            i += 1
-        }
-        return options
-    }
-
-    private static func parseDetectorSettings(_ value: String) -> DetectorSettings? {
-        var settings = DetectorSettings()
-        for part in value.split(separator: ",") {
-            let pieces = part.split(separator: "=", maxSplits: 1).map(String.init)
-            guard pieces.count == 2 else { return nil }
-            switch pieces[0] {
-            case "accurate":
-                if pieces[1] == "true" {
-                    settings.accurate = true
-                } else if pieces[1] == "false" {
-                    settings.accurate = false
-                } else {
-                    return nil
-                }
-            case "maxPixelSize":
-                guard let parsed = Double(pieces[1]), parsed > 0 else { return nil }
-                settings.maxPixelSize = CGFloat(parsed)
-            case "minimumTextHeight":
-                guard let parsed = Float(pieces[1]), parsed > 0, parsed < 1 else { return nil }
-                settings.minimumTextHeight = parsed
-            case "enhanceLowContrast":
-                if pieces[1] == "true" {
-                    settings.enhanceLowContrast = true
-                } else if pieces[1] == "false" {
-                    settings.enhanceLowContrast = false
-                } else {
-                    return nil
-                }
-            default:
-                return nil
-            }
-        }
-        return settings
-    }
-
-    private static func parseGuardMode(_ value: String) -> GuardMode? {
-        switch value.lowercased() {
-        case "lockdown":
-            return .lockdown
-        case "standard":
-            return .standard
-        case "low-latency", "low_latency", "lowlatency":
-            return .lowLatency
-        default:
-            return nil
-        }
-    }
-
-    static let helpText = """
-    pii-stream — real-time PII detection on the main display
-
-    Usage:
-      pii-stream watch [options]
-      pii-stream serve [options]
-      pii-stream benchmark [options]
-      pii-stream detect-image --image PATH [options] --json
-
-    Watch options:
-      --needle TEXT   Additional PII needle to match (repeatable)
-      --no-email      Disable email regex detection
-      --no-phone      Disable phone number detection
-      --mode MODE     lockdown, standard, or low-latency (default: standard)
-      --fps N         Override mode detection rate
-      --accurate      Use accurate Vision OCR (slower)
-      --min-text-height N
-                     Override Vision minimum text height
-      --max-pixel-size N
-                     Override longest OCR side after downscale
-      --enhance-low-contrast
-                     Boost contrast/sharpness before OCR
-      --remote HOST:PORT
-                     Send captured frames to a remote processor
-      --token TOKEN   Shared token for remote processing
-
-    Serve options:
-      --host HOST     Listen host (default: 127.0.0.1; use 0.0.0.0 for LAN)
-      --port PORT     Listen port (default: 8765)
-      --token TOKEN   Shared token; generated and printed when omitted
-
-    Benchmark:
-      Captures live frames once, then measures detection latency across a
-      fixed matrix: 720p (1280x720) and 1080p (1920x1080), each reported
-      against 10, 30, and 60 fps budgets. Each row lists min, p95, average
-      frame time, required render delay, budget slack, and budget fit.
-
-    Benchmark options:
-      --needle TEXT   Additional PII needle to match (repeatable)
-      --no-email      Disable email regex detection
-      --no-phone      Disable phone number detection
-      --duration N    Capture duration in seconds (default: 5)
-      --output PATH   Write JSON summary to PATH instead of stdout
-      --csv PATH      Write CSV summary to PATH
-
-    Detect image options:
-      --image PATH    Image to scan
-      --needle TEXT   Additional PII needle to match (repeatable)
-      --json          Emit detector JSON for benchmark adapters
-      --no-email      Disable email regex detection
-      --no-phone      Disable phone number detection
-      --mode MODE     lockdown, standard, or low-latency (default: standard)
-      --accurate      Use accurate Vision OCR (slower)
-      --min-text-height N
-                     Override Vision minimum text height
-      --max-pixel-size N
-                     Override longest OCR side after downscale
-      --enhance-low-contrast
-                     Boost contrast/sharpness before OCR
-
-    General:
-      -h, --help      Show this help
-    """
-}
-
-enum Command {
-    case watch(WatchOptions)
-    case serve(ServeOptions)
-    case benchmark(BenchmarkOptions)
-    case detectImage(DetectImageOptions)
-}
-
-enum CLIError: Error, LocalizedError {
-    case usage
-    case help
-    case missingValue(String)
-    case invalidValue(String)
-    case unknownFlag(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .usage:
-            return "Invalid usage. Run `pii-stream --help`."
-        case .help:
-            return CLI.helpText
-        case .missingValue(let flag):
-            return "Missing value for \(flag)."
-        case .invalidValue(let flag):
-            return "Invalid value for \(flag)."
-        case .unknownFlag(let flag):
-            return "Unknown flag: \(flag)."
-        }
     }
 }

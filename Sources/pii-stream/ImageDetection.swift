@@ -3,19 +3,39 @@ import CoreImage
 import CoreVideo
 import Foundation
 
-struct DetectImageOptions {
-    var imagePath: String
-    var needles: [String] = []
-    var checkEmail: Bool = true
-    var checkPhone: Bool = true
-    var mode: GuardMode = .standard
-    var settingsOverride: DetectorSettings?
+public struct DetectImageOptions {
+    public var imagePath: String
+    public var needles: [String]
+    public var checkEmail: Bool
+    public var checkPhone: Bool
+    public var mode: GuardMode
+    public var settingsOverride: DetectorSettings?
+
+    public init(
+        imagePath: String,
+        needles: [String] = [],
+        checkEmail: Bool = true,
+        checkPhone: Bool = true,
+        mode: GuardMode = .standard,
+        settingsOverride: DetectorSettings? = nil
+    ) {
+        self.imagePath = imagePath
+        self.needles = needles
+        self.checkEmail = checkEmail
+        self.checkPhone = checkPhone
+        self.mode = mode
+        self.settingsOverride = settingsOverride
+    }
 }
 
-struct ImageDetectionRunner {
+public struct ImageDetectionRunner {
     let options: DetectImageOptions
 
-    func run() throws {
+    public init(options: DetectImageOptions) {
+        self.options = options
+    }
+
+    public func run() throws {
         let started = DispatchTime.now().uptimeNanoseconds
         let buffer = try loadPixelBuffer(path: options.imagePath)
         let settings = options.settingsOverride ?? options.mode.detectorSettings

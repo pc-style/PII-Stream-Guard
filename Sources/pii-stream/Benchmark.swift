@@ -3,47 +3,100 @@ import CoreImage
 import CoreVideo
 import Foundation
 
-struct DetectorSettings: Codable, Equatable {
-    var accurate: Bool = false
-    var maxPixelSize: CGFloat = 1440
-    var minimumTextHeight: Float = 0.012
-    var enhanceLowContrast: Bool = false
+public struct BenchmarkOptions {
+    public var needles: [String]
+    public var checkEmail: Bool
+    public var checkPhone: Bool
+    public var duration: Double
+    public var outputPath: String?
+    public var csvPath: String?
+
+    public init(
+        needles: [String] = [],
+        checkEmail: Bool = true,
+        checkPhone: Bool = true,
+        duration: Double = 5,
+        outputPath: String? = nil,
+        csvPath: String? = nil
+    ) {
+        self.needles = needles
+        self.checkEmail = checkEmail
+        self.checkPhone = checkPhone
+        self.duration = duration
+        self.outputPath = outputPath
+        self.csvPath = csvPath
+    }
 }
 
-struct BenchmarkOptions {
-    var needles: [String] = []
-    var checkEmail: Bool = true
-    var checkPhone: Bool = true
-    var duration: Double = 5
-    var outputPath: String?
-    var csvPath: String?
+public struct BenchmarkSummary: Codable {
+    public let capturedFrames: Int
+    public let sampledFrames: Int
+    public let duration: Double
+    public let results: [BenchmarkResult]
+
+    public init(
+        capturedFrames: Int,
+        sampledFrames: Int,
+        duration: Double,
+        results: [BenchmarkResult]
+    ) {
+        self.capturedFrames = capturedFrames
+        self.sampledFrames = sampledFrames
+        self.duration = duration
+        self.results = results
+    }
 }
 
-struct BenchmarkSummary: Codable {
-    let capturedFrames: Int
-    let sampledFrames: Int
-    let duration: Double
-    let results: [BenchmarkResult]
+public struct BenchmarkResult: Codable {
+    public let resolution: String
+    public let width: Int
+    public let height: Int
+    public let targetFps: Double
+    public let frameBudgetMS: Double
+    public let frames: Int
+    public let latencyMinMS: Double
+    public let latencyP95MS: Double
+    public let latencyAverageMS: Double
+    public let requiredRenderDelayMS: Double
+    public let budgetSlackMS: Double
+    public let meetsBudget: Bool
+    public let hitCount: Int
+    public let matchedKinds: [String]
+
+    public init(
+        resolution: String,
+        width: Int,
+        height: Int,
+        targetFps: Double,
+        frameBudgetMS: Double,
+        frames: Int,
+        latencyMinMS: Double,
+        latencyP95MS: Double,
+        latencyAverageMS: Double,
+        requiredRenderDelayMS: Double,
+        budgetSlackMS: Double,
+        meetsBudget: Bool,
+        hitCount: Int,
+        matchedKinds: [String]
+    ) {
+        self.resolution = resolution
+        self.width = width
+        self.height = height
+        self.targetFps = targetFps
+        self.frameBudgetMS = frameBudgetMS
+        self.frames = frames
+        self.latencyMinMS = latencyMinMS
+        self.latencyP95MS = latencyP95MS
+        self.latencyAverageMS = latencyAverageMS
+        self.requiredRenderDelayMS = requiredRenderDelayMS
+        self.budgetSlackMS = budgetSlackMS
+        self.meetsBudget = meetsBudget
+        self.hitCount = hitCount
+        self.matchedKinds = matchedKinds
+    }
 }
 
-struct BenchmarkResult: Codable {
-    let resolution: String
-    let width: Int
-    let height: Int
-    let targetFps: Double
-    let frameBudgetMS: Double
-    let frames: Int
-    let latencyMinMS: Double
-    let latencyP95MS: Double
-    let latencyAverageMS: Double
-    let requiredRenderDelayMS: Double
-    let budgetSlackMS: Double
-    let meetsBudget: Bool
-    let hitCount: Int
-    let matchedKinds: [String]
-}
-
-final class BenchmarkRunner {
+public final class BenchmarkRunner {
     private struct ResolutionCase {
         let width: Int
         let height: Int
@@ -75,11 +128,11 @@ final class BenchmarkRunner {
     private let targetFpsValues: [Double] = [10, 30, 60]
     private let detectorSettings = DetectorSettings()
 
-    init(options: BenchmarkOptions) {
+    public init(options: BenchmarkOptions) {
         self.options = options
     }
 
-    func run() async throws -> BenchmarkSummary {
+    public func run() async throws -> BenchmarkSummary {
         let capture = ScreenCaptureManager(frameStore: frameStore) { [weak self] _ in
             self?.capturedFrames += 1
         }
@@ -104,7 +157,7 @@ final class BenchmarkRunner {
         )
     }
 
-    func write(_ summary: BenchmarkSummary) throws {
+    public func write(_ summary: BenchmarkSummary) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(summary)
@@ -243,10 +296,10 @@ final class BenchmarkRunner {
     }
 }
 
-enum BenchmarkError: Error, LocalizedError {
+public enum BenchmarkError: Error, LocalizedError {
     case noFrames
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .noFrames:
             return "No screen frames captured within 10 seconds. Check Screen Recording permission."

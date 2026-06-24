@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-enum GuardMode: String, CaseIterable, Codable {
+public enum GuardMode: String, CaseIterable, Codable {
     case lockdown
     case standard
     case lowLatency = "low-latency"
@@ -41,7 +41,7 @@ enum GuardMode: String, CaseIterable, Codable {
         case .lowLatency:
             return DetectorSettings(
                 accurate: false,
-                maxPixelSize: 1920,
+                maxPixelSize: 1440,
                 minimumTextHeight: 0.006,
                 enhanceLowContrast: true
             )
@@ -52,7 +52,7 @@ enum GuardMode: String, CaseIterable, Codable {
         switch self {
         case .lockdown: return 5
         case .standard: return 10
-        case .lowLatency: return 30
+        case .lowLatency: return 15
         }
     }
 
@@ -88,12 +88,12 @@ enum GuardMode: String, CaseIterable, Codable {
     }
 }
 
-enum MaskMode: String, Codable {
+public enum MaskMode: String, Codable {
     case boundingBox
     case blackout
 }
 
-struct GuardStateSnapshot {
+public struct GuardStateSnapshot {
     let boxes: [PIIBox]
     let active: Bool
     let mode: GuardMode
