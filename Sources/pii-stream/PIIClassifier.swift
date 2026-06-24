@@ -62,7 +62,11 @@ public struct PIIClassifier {
     public let checkPhone: Bool
 
     private let normalizedNeedles: [String]
-    private let emailRegex = try! NSRegularExpression(
+    private let compactEmailRegex = try! NSRegularExpression(
+        pattern: "\\b[A-Z0-9._%+-]+@(?:[A-Z0-9-]+\\.)+[A-Z]{2,}\\b",
+        options: [.caseInsensitive]
+    )
+    private let spacedEmailRegex = try! NSRegularExpression(
         pattern: "\\b[A-Z0-9._%+-]+\\s*@\\s*(?:[A-Z0-9-]+\\s*\\.\\s*)+[A-Z]{2,}\\b",
         options: [.caseInsensitive]
     )
@@ -118,11 +122,46 @@ public struct PIIClassifier {
     private func collectEmailBoxes(from fragment: RecognizedTextFragment, into boxes: inout [PIIBox]) {
         let raw = fragment.raw
         let nsRange = NSRange(raw.startIndex..., in: raw)
-        for match in emailRegex.matches(in: raw, range: nsRange) {
+        for match in spacedEmailRegex.matches(in: raw, range: nsRange) {
             guard let range = Range(match.range, in: raw) else { continue }
-            let matched = String(raw[range]).filter { !$0.isWhitespace }
+            let matched = String(raw[range]).filter { !$0.isWhitespace }.lowercased()
             appendBox(kind: .email, matched: matched, range: range, fragment: fragment, into: &boxes)
         }
+
+        collectWhitespaceSplitEmailBoxes(from: fragment, into: &boxes)
+    }
+
+    private func collectWhitespaceSplitEmailBoxes(from fragment: RecognizedTextFragment, into boxes: inout [PIIBox]) {
+        let raw = fragment.raw
+        let tokens = raw.rangesOfNonWhitespace()
+        guard tokens.count >= 2 else { return }
+
+        for start in tokens.indices {
+            let maxEnd = min(tokens.index(start, offsetBy: 5, limitedBy: tokens.endIndex) ?? tokens.endIndex, tokens.endIndex)
+            if !raw[tokens[start]].contains("@") {
+                let next = tokens.index(after: start)
+                guard next < tokens.endIndex, raw[tokens[next]].contains("@") else { continue }
+            }
+            guard tokens[start..<maxEnd].contains(where: { raw[$0].contains("@") }) else { continue }
+            var end = tokens.index(after: start)
+            while end <= maxEnd {
+                let window = tokens[start..<end]
+                let compact = window.map { raw[$0] }.joined().lowercased()
+                if isWholeEmail(compact) {
+                    let originalRange = tokens[start].lowerBound..<window.last!.upperBound
+                    appendBox(kind: .email, matched: compact, range: originalRange, fragment: fragment, into: &boxes)
+                    break
+                }
+                guard end < tokens.endIndex else { break }
+                end = tokens.index(after: end)
+            }
+        }
+    }
+
+    private func isWholeEmail(_ value: String) -> Bool {
+        let nsRange = NSRange(value.startIndex..., in: value)
+        guard let match = compactEmailRegex.firstMatch(in: value, range: nsRange) else { return false }
+        return match.range.location == 0 && match.range.length == nsRange.length
     }
 
     private func collectPhoneBoxes(from fragment: RecognizedTextFragment, into boxes: inout [PIIBox]) {
@@ -217,6 +256,16 @@ public struct PIIClassifier {
     }
 
     private func deduplicated(_ boxes: [PIIBox]) -> [PIIBox] {
+        let boxes = boxes.filter { box in
+            guard box.kind == .email else { return true }
+            return !boxes.contains { other in
+                other.kind == .email
+                    && other.matched.count > box.matched.count
+                    && other.matched.contains(box.matched)
+                    && rectOverlap(box.normalizedRect, other.normalizedRect) >= 0.75
+            }
+        }
+
         var bestByKey: [String: PIIBox] = [:]
         for box in boxes {
             let key = "\(box.identityKey):\(coarseRectBucket(box.normalizedRect))"
@@ -240,6 +289,14 @@ public struct PIIClassifier {
             .joined(separator: ",")
     }
 
+    private func rectOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let intersection = a.intersection(b)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return 0 }
+        let smallerArea = min(a.width * a.height, b.width * b.height)
+        guard smallerArea > 0 else { return 0 }
+        return (intersection.width * intersection.height) / smallerArea
+    }
+
     private func paddedRect(_ rect: CGRect, padding: CGFloat = 0.02) -> CGRect {
         var r = rect
         r.origin.x = max(0, r.origin.x - padding)
@@ -247,5 +304,28 @@ public struct PIIClassifier {
         r.size.width = min(1 - r.origin.x, r.size.width + padding * 2)
         r.size.height = min(1 - r.origin.y, r.size.height + padding * 2)
         return r
+    }
+}
+
+private extension String {
+    func rangesOfNonWhitespace() -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var start: String.Index?
+
+        for index in indices {
+            if self[index].isWhitespace {
+                if let tokenStart = start {
+                    ranges.append(tokenStart..<index)
+                    start = nil
+                }
+            } else if start == nil {
+                start = index
+            }
+        }
+
+        if let tokenStart = start {
+            ranges.append(tokenStart..<endIndex)
+        }
+        return ranges
     }
 }

@@ -15,6 +15,12 @@ func checkClassifier() {
     check(emailBoxes.first?.kind == .email, "expected email kind")
     check(emailBoxes.first?.matched == "jane@example.com", "expected whitespace-normalized email")
 
+    let spacedEmailBoxes = PIIClassifier(needles: []).classify([
+        RecognizedTextFragment(raw: "ma rcus.webb@no rthwind-logistics. com", confidence: 0.5, normalizedRect: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.1)),
+    ])
+    check(spacedEmailBoxes.count == 1, "expected email with OCR-inserted spaces")
+    check(spacedEmailBoxes.first?.matched == "marcus.webb@northwind-logistics.com", "expected compacted OCR email")
+
     let needleBoxes = PIIClassifier(needles: ["Secret Code"], checkEmail: false, checkPhone: false).classify([
         RecognizedTextFragment(raw: "show SECRET   code now", confidence: 0.8, normalizedRect: CGRect(x: 0, y: 0, width: 0.5, height: 0.1)),
     ])
