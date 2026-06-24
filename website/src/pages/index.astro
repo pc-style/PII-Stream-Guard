@@ -45,6 +45,23 @@ const modes = [
   { name: "low-latency", who: "responsive", p: "lower delay and a faster cadence. for live walkthroughs where the preview should track your hands.", chips: ["lowest delay", "faster cadence"], def: false },
 ];
 
+const presentation = [
+  {
+    name: "window",
+    who: "two monitors",
+    p: "the protected preview opens in its own borderless window. capture and redaction run on a delayed buffer, so what you see is frame-accurate. pair it with record for a synced, redacted mov.",
+    chips: ["separate window", "frame-accurate", "recordable"],
+    def: true,
+  },
+  {
+    name: "overlay",
+    who: "one monitor",
+    p: "the redaction boxes are drawn straight on top of the real screen as a transparent, click-through layer. no second display needed. detection lags the screen during motion, so treat it as live awareness, not a clean frame — use window + record when the output has to be exact.",
+    chips: ["on-screen", "no 2nd monitor", "click-through"],
+    def: false,
+  },
+];
+
 const topo = [
   { name: "local", who: "one mac", p: "the same machine captures the screen, runs ocr, and renders the protected preview. no network, no trust surface." },
   { name: "remote", who: "client + server", p: "a client mac captures frames and sends them to a processing server over a token-authenticated websocket. if the remote path fails, the client fails closed with a black frame." },
@@ -53,6 +70,7 @@ const topo = [
 const cmds = [
   { label: "one-line installer", code: "./scripts/setup.sh" },
   { label: "build from source", code: "swift build -c release\n.build/release/pii-stream watch --mode standard" },
+  { label: "on-screen overlay", code: "# one monitor, no preview window\npii-stream watch --mode standard --overlay" },
   { label: "server + client", code: 'pii-stream serve --host 0.0.0.0 --port 8765 \\\n  --token "a-long-random-token"\n\npii-stream watch --remote SERVER:8765 \\\n  --token "a-long-random-token" --mode standard' },
   { label: "scan a static image", code: "pii-stream detect-image --image ./shot.png --json" },
 ];
@@ -170,8 +188,30 @@ const cmds = [
     </div>
   </section>
 
+  <section id="presentation">
+    <div class="mark"><span class="no">§ 05</span><h2>presentation</h2></div>
+    <p class="lead">
+      where the redacted preview shows up. orthogonal to mode — pick window for a
+      frame-accurate buffer, or overlay to draw redaction straight on the screen
+      when you only have one display.
+    </p>
+    <div class="spec">
+      {presentation.map((p) => (
+        <div class="item" data-rv>
+          <div class="top">
+            <span class="name">{p.name}</span>
+            <span class="who">{p.who}</span>
+            {p.def && <span class="badge">default</span>}
+          </div>
+          <p>{p.p}</p>
+          <div class="chips">{p.chips.map((c) => <span>{c}</span>)}</div>
+        </div>
+      ))}
+    </div>
+  </section>
+
   <section id="topology">
-    <div class="mark"><span class="no">§ 05</span><h2>deployment</h2></div>
+    <div class="mark"><span class="no">§ 06</span><h2>deployment</h2></div>
     <div class="spec">
       {topo.map((t) => (
         <div class="item" data-rv>
@@ -183,7 +223,7 @@ const cmds = [
   </section>
 
   <section id="install">
-    <div class="mark"><span class="no">§ 06</span><h2>field install</h2></div>
+    <div class="mark"><span class="no">§ 07</span><h2>field install</h2></div>
     <p class="lead">
       macos only. built with swiftpm, no xcode project. the interactive
       installer builds the release binary and offers to start any mode.
@@ -205,7 +245,7 @@ const cmds = [
   </section>
 
   <section id="safe">
-    <div class="mark"><span class="no">§ 07</span><h2>the safe default</h2></div>
+    <div class="mark"><span class="no">§ 08</span><h2>the safe default</h2></div>
     <div class="directive" data-rv>
       <p class="rule">when in doubt, show nothing.</p>
       <p>
