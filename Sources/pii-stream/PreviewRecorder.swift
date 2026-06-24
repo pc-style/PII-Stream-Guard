@@ -180,14 +180,20 @@ final class PreviewRecorder {
                     within: CGRect(x: 0, y: 0, width: width, height: height)
                 )
             }
+            let drawRect = CGRect(
+                x: rect.origin.x,
+                y: CGFloat(height) - rect.maxY,
+                width: rect.width,
+                height: rect.height
+            )
             switch maskMode {
             case .blackout:
                 context.setFillColor(CGColor(gray: 0, alpha: 1))
-                context.fill(rect)
+                context.fill(drawRect)
             case .boundingBox:
                 context.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
                 context.setLineWidth(4)
-                context.stroke(rect)
+                context.stroke(drawRect)
             }
         }
     }
