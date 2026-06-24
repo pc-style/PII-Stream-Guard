@@ -45,12 +45,14 @@ struct RemoteDetection: Codable {
 
     var box: PIIBox {
         let safeMatchedLength = max(0, min(matchedLength, 10_000))
+        let safeConfidence = confidence.isFinite ? max(0, min(confidence, 1)) : 0
+        let safeRect = rect.sanitizedNormalizedRect
         return PIIBox(
             kind: kind,
             matched: String(repeating: "*", count: safeMatchedLength),
-            confidence: confidence,
-            normalizedRect: rect.cgRect,
-            detectedAt: detectedAt
+            confidence: safeConfidence,
+            normalizedRect: safeRect,
+            detectedAt: detectedAt.isFinite ? detectedAt : 0
         )
     }
 }
@@ -69,6 +71,22 @@ struct RemoteRect: Codable {
     }
 
     var cgRect: CGRect {
-        CGRect(x: x, y: y, width: width, height: height)
+        sanitizedNormalizedRect
+    }
+
+    var sanitizedNormalizedRect: CGRect {
+        guard x.isFinite, y.isFinite, width.isFinite, height.isFinite else { return .zero }
+        let minX = min(x, x + width)
+        let maxX = max(x, x + width)
+        let minY = min(y, y + height)
+        let maxY = max(y, y + height)
+        let clampedMinX = max(0, min(minX, 1))
+        let clampedMaxX = max(0, min(maxX, 1))
+        let clampedMinY = max(0, min(minY, 1))
+        let clampedMaxY = max(0, min(maxY, 1))
+        let clampedWidth = clampedMaxX - clampedMinX
+        let clampedHeight = clampedMaxY - clampedMinY
+        guard clampedWidth > 0, clampedHeight > 0 else { return .zero }
+        return CGRect(x: clampedMinX, y: clampedMinY, width: clampedWidth, height: clampedHeight)
     }
 }

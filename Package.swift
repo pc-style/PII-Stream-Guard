@@ -5,6 +5,7 @@ let package = Package(
     name: "pii-stream",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "PIIStream", targets: ["pii-stream"]),
         .executable(name: "pii-stream", targets: ["pii-stream-cli"]),
     ],
     targets: [

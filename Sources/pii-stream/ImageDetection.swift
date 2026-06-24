@@ -4,12 +4,28 @@ import CoreVideo
 import Foundation
 
 public struct DetectImageOptions {
-    var imagePath: String
-    var needles: [String] = []
-    var checkEmail: Bool = true
-    var checkPhone: Bool = true
-    var mode: GuardMode = .standard
-    var settingsOverride: DetectorSettings?
+    public var imagePath: String
+    public var needles: [String]
+    public var checkEmail: Bool
+    public var checkPhone: Bool
+    public var mode: GuardMode
+    public var settingsOverride: DetectorSettings?
+
+    public init(
+        imagePath: String,
+        needles: [String] = [],
+        checkEmail: Bool = true,
+        checkPhone: Bool = true,
+        mode: GuardMode = .standard,
+        settingsOverride: DetectorSettings? = nil
+    ) {
+        self.imagePath = imagePath
+        self.needles = needles
+        self.checkEmail = checkEmail
+        self.checkPhone = checkPhone
+        self.mode = mode
+        self.settingsOverride = settingsOverride
+    }
 }
 
 public struct ImageDetectionRunner {

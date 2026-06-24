@@ -54,9 +54,29 @@ public enum CLI {
         }
     }
 
+    private struct DetectorOverrideFlags {
+        var accurate: Bool?
+        var minimumTextHeight: Float?
+        var maxPixelSize: CGFloat?
+        var enhanceLowContrast: Bool?
+
+        var hasAny: Bool {
+            accurate != nil || minimumTextHeight != nil || maxPixelSize != nil || enhanceLowContrast != nil
+        }
+
+        func applied(to base: DetectorSettings) -> DetectorSettings {
+            var settings = base
+            if let accurate { settings.accurate = accurate }
+            if let minimumTextHeight { settings.minimumTextHeight = minimumTextHeight }
+            if let maxPixelSize { settings.maxPixelSize = maxPixelSize }
+            if let enhanceLowContrast { settings.enhanceLowContrast = enhanceLowContrast }
+            return settings
+        }
+    }
+
     private static func parseWatchOptions(_ args: [String]) throws -> WatchOptions {
         var options = WatchOptions()
-        var settingsOverride: DetectorSettings?
+        var detectorOverrides = DetectorOverrideFlags()
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -81,29 +101,21 @@ public enum CLI {
                 }
                 options.mode = mode
             case "--accurate":
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.accurate = true
-                settingsOverride = settings
+                detectorOverrides.accurate = true
             case "--min-text-height":
                 i += 1
                 guard i < args.count, let value = Float(args[i]), value > 0, value < 1 else {
                     throw CLIError.invalidValue("--min-text-height")
                 }
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.minimumTextHeight = value
-                settingsOverride = settings
+                detectorOverrides.minimumTextHeight = value
             case "--max-pixel-size":
                 i += 1
                 guard i < args.count, let value = Double(args[i]), value > 0 else {
                     throw CLIError.invalidValue("--max-pixel-size")
                 }
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.maxPixelSize = CGFloat(value)
-                settingsOverride = settings
+                detectorOverrides.maxPixelSize = CGFloat(value)
             case "--enhance-low-contrast":
-                var settings = settingsOverride ?? options.mode.detectorSettings
-                settings.enhanceLowContrast = true
-                settingsOverride = settings
+                detectorOverrides.enhanceLowContrast = true
             case "--position":
                 i += 1
                 guard i < args.count, let placement = WindowPlacement(rawValue: args[i]) else {
@@ -131,7 +143,9 @@ public enum CLI {
             }
             i += 1
         }
-        options.settingsOverride = settingsOverride
+        if detectorOverrides.hasAny {
+            options.settingsOverride = detectorOverrides.applied(to: options.mode.detectorSettings)
+        }
         return options
     }
 
@@ -168,7 +182,7 @@ public enum CLI {
         var checkEmail = true
         var checkPhone = true
         var mode: GuardMode = .standard
-        var settingsOverride: DetectorSettings?
+        var detectorOverrides = DetectorOverrideFlags()
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -193,29 +207,21 @@ public enum CLI {
                 }
                 mode = parsed
             case "--accurate":
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.accurate = true
-                settingsOverride = settings
+                detectorOverrides.accurate = true
             case "--min-text-height":
                 i += 1
                 guard i < args.count, let value = Float(args[i]), value > 0, value < 1 else {
                     throw CLIError.invalidValue("--min-text-height")
                 }
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.minimumTextHeight = value
-                settingsOverride = settings
+                detectorOverrides.minimumTextHeight = value
             case "--max-pixel-size":
                 i += 1
                 guard i < args.count, let value = Double(args[i]), value > 0 else {
                     throw CLIError.invalidValue("--max-pixel-size")
                 }
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.maxPixelSize = CGFloat(value)
-                settingsOverride = settings
+                detectorOverrides.maxPixelSize = CGFloat(value)
             case "--enhance-low-contrast":
-                var settings = settingsOverride ?? mode.detectorSettings
-                settings.enhanceLowContrast = true
-                settingsOverride = settings
+                detectorOverrides.enhanceLowContrast = true
             default:
                 throw CLIError.unknownFlag(args[i])
             }
@@ -229,7 +235,9 @@ public enum CLI {
             checkEmail: checkEmail,
             checkPhone: checkPhone,
             mode: mode,
-            settingsOverride: settingsOverride
+            settingsOverride: detectorOverrides.hasAny
+                ? detectorOverrides.applied(to: mode.detectorSettings)
+                : nil
         )
     }
 
@@ -338,7 +346,9 @@ public enum CLI {
                      Override longest OCR side after downscale
       --enhance-low-contrast
                      Boost contrast/sharpness before OCR
-      --position POS Place preview window: center, left, or right
+      --position PLACEMENT
+                     Preview window placement: center, left, or right
+                     (default: center)
       --preview MODE Preview mode: window or overlay (default: window)
       --overlay      Alias for --preview overlay
       --remote HOST:PORT
