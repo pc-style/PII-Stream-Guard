@@ -82,8 +82,8 @@ final class PreviewView: NSView {
         let offsetX: CGFloat
         let offsetY: CGFloat
         if mapsOverlayToBounds {
-            scaleX = viewBounds.width / frameSize.width
-            scaleY = viewBounds.height / frameSize.height
+            scaleX = 1
+            scaleY = 1
             offsetX = 0
             offsetY = 0
         } else {
@@ -105,7 +105,9 @@ final class PreviewView: NSView {
         }
 
         for box in boxes {
-            let rect = FrameMasker.pixelRect(from: box.normalizedRect, frameSize: frameSize)
+            let rect = mapsOverlayToBounds
+                ? overlayRect(from: box.normalizedRect, in: viewBounds)
+                : FrameMasker.pixelRect(from: box.normalizedRect, frameSize: frameSize)
             var scaled = CGRect(
                 x: offsetX + rect.origin.x * scaleX,
                 y: offsetY + rect.origin.y * scaleY,
@@ -139,6 +141,15 @@ final class PreviewView: NSView {
             label.frame = CGRect(x: scaled.minX, y: scaled.maxY + 2, width: min(320, viewBounds.width - scaled.minX), height: 16)
             overlayLayer.addSublayer(label)
         }
+    }
+
+    private func overlayRect(from normalizedRect: CGRect, in bounds: CGRect) -> CGRect {
+        CGRect(
+            x: normalizedRect.origin.x * bounds.width,
+            y: (1 - normalizedRect.origin.y - normalizedRect.height) * bounds.height,
+            width: normalizedRect.width * bounds.width,
+            height: normalizedRect.height * bounds.height
+        )
     }
 
 
@@ -405,7 +416,7 @@ final class PreviewWindowController: NSWindowController {
             }
             return window
         case .screenOverlay:
-            let screenFrame = NSScreen.main?.frame ?? NSRect(origin: .zero, size: windowSize)
+            let screenFrame = Self.screenForMainDisplay()?.frame ?? NSScreen.main?.frame ?? NSRect(origin: .zero, size: windowSize)
             let window = NSWindow(
                 contentRect: screenFrame,
                 styleMask: [.borderless],
@@ -421,6 +432,16 @@ final class PreviewWindowController: NSWindowController {
             window.level = .screenSaver
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             return window
+        }
+    }
+
+    private static func screenForMainDisplay() -> NSScreen? {
+        let mainDisplayID = CGMainDisplayID()
+        return NSScreen.screens.first { screen in
+            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return false
+            }
+            return screenNumber.uint32Value == mainDisplayID
         }
     }
 }
