@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreMedia
 import Foundation
 
 public final class AppCoordinator: NSObject, NSApplicationDelegate {
@@ -8,12 +9,15 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     let boxStore = BoxStore()
     let options: WatchOptions
 
-    private var capture: ScreenCaptureManager?
+    private var capture: CaptureEngine?
     private var preview: PreviewWindowController?
+    private var pump: ProtectedFramePump?
+    private let recorder = ProtectedRecorder()
     private let detectionQueue = DispatchQueue(label: "pii-stream.detection")
     private var processor: FrameProcessor
     private var remoteClient: RemoteFrameClient?
     private var guardMode: GuardMode
+    private var maskMode: MaskMode
     private var lastDetectionTime: TimeInterval = 0
     private var lastLoggedSignature: String = ""
     private let detectionStateLock = NSLock()
@@ -23,26 +27,56 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     private var remoteInFlight = false
     private var pendingRemoteSample: FrameSample?
 
+    private var axScanner: AccessibilityTextScanner?
+    private var axTimer: DispatchSourceTimer?
+    private let axQueue = DispatchQueue(label: "pii-stream.ax", qos: .utility)
+    private var axInFlight = false
+    private var axWarnedNoTrust = false
+
+    private var durationWorkItem: DispatchWorkItem?
+    private var sigintSource: DispatchSourceSignal?
+    private var latestFreshness = DetectionFreshness.none
+
     public init(options: WatchOptions) {
         self.options = options
         captureFrameStore = options.remote == nil ? frameStore : FrameStore()
         guardMode = options.mode
+        maskMode = options.maskMode
         processor = FrameProcessor(options: options.processingOptions)
         super.init()
     }
 
-    public func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.activate(ignoringOtherApps: true)
+    // MARK: App lifecycle
 
-        preview = PreviewWindowController(
-            frameStore: frameStore,
-            boxStore: boxStore,
-            windowSize: CGSize(width: 1280, height: 800),
-            initialMode: options.mode,
-            presentation: options.previewPresentation,
-            placement: options.placement
-        ) { [weak self] mode in
-            self?.setMode(mode)
+    public func applicationDidFinishLaunching(_ notification: Notification) {
+        let headless = options.previewPresentation == nil
+        NSApp.setActivationPolicy(headless ? .accessory : .regular)
+        if !headless {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        recorder.onEvent = { [weak self] event in
+            self?.handleRecorderEvent(event)
+        }
+
+        if let presentation = options.previewPresentation {
+            preview = PreviewWindowController(
+                windowSize: CGSize(width: 1280, height: 800),
+                initialMode: options.mode,
+                initialMaskMode: options.maskMode,
+                presentation: presentation,
+                placement: options.placement,
+                shareable: options.shareablePreview,
+                onModeChanged: { [weak self] mode in
+                    self?.setMode(mode)
+                },
+                onMaskChanged: { [weak self] mask in
+                    self?.maskMode = mask
+                },
+                onRecordToggle: { [weak self] wantsRecording in
+                    self?.toggleRecording(wantsRecording)
+                }
+            )
         }
 
         if let remote = options.remote {
@@ -71,23 +105,316 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             }
         }
 
-        capture = ScreenCaptureManager(frameStore: captureFrameStore) { [weak self] sample in
-            self?.scheduleDetectionIfNeeded(sample: sample)
+        let pump = ProtectedFramePump(frameStore: frameStore, boxStore: boxStore, guardMode: guardMode)
+        pump.onProtectedFrame = { [weak self] frame in
+            self?.handleProtectedFrame(frame)
         }
+        if options.previewPresentation == .screenOverlay {
+            pump.onImmediateFrame = { [weak self] frame in
+                guard let self else { return }
+                self.preview?.render(frame, maskMode: self.maskMode)
+            }
+        }
+        self.pump = pump
+        pump.start()
+
+        capture = CaptureEngine(
+            frameStore: captureFrameStore,
+            options: options.capture,
+            onFrame: { [weak self] sample in
+                self?.scheduleDetectionIfNeeded(sample: sample)
+            },
+            onAudio: { [weak self] sampleBuffer in
+                self?.recorder.appendAudio(sampleBuffer)
+            }
+        )
+
+        installSignalHandler()
+        startControlInput()
 
         Task {
             do {
                 try await capture?.start()
+                await MainActor.run {
+                    self.emitEvent("started", [
+                        "target": self.capture?.geometry?.targetDescription ?? "unknown",
+                        "guardMode": self.guardMode.rawValue,
+                        "preview": self.options.previewPresentation?.rawValue ?? "none",
+                    ])
+                    self.startAccessibilityScanningIfEnabled()
+                    if self.options.recording != nil {
+                        self.startRecording(overridePath: nil)
+                    }
+                }
             } catch {
                 fputs("Failed to start screen capture: \(error.localizedDescription)\n", stderr)
-                NSApp.terminate(nil)
+                await MainActor.run {
+                    self.emitEvent("error", ["message": error.localizedDescription])
+                    NSApp.terminate(nil)
+                }
             }
         }
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        options.previewPresentation != nil
     }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        recorder.stop()
+    }
+
+    // MARK: Protected frame fan-out
+
+    private func handleProtectedFrame(_ frame: ProtectedFramePump.ProtectedFrame) {
+        if options.previewPresentation == .window {
+            preview?.render(frame, maskMode: maskMode)
+        }
+        if recorder.isRecording {
+            recorder.append(
+                sample: frame.sample,
+                boxes: frame.snapshot.boxes,
+                maskMode: maskMode,
+                guardMode: guardMode,
+                isArmed: frame.snapshot.armed,
+                blackoutWholeFrame: frame.snapshot.blackoutWholeFrame,
+                freshness: frame.snapshot.freshness
+            )
+        }
+    }
+
+    // MARK: Recording control
+
+    private func startRecording(overridePath: String?) {
+        guard !recorder.isRecording else { return }
+        var recordingOptions = options.recording ?? RecordingOptions()
+        if let overridePath {
+            recordingOptions.outputPath = overridePath
+        }
+        recordingOptions.includeAudio = recordingOptions.includeAudio && options.capture.capturesAudio
+        do {
+            let url = try recorder.start(options: recordingOptions)
+            preview?.setRecordingStatus(true, message: "Recording \(url.lastPathComponent)")
+            if let duration = recordingOptions.duration {
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self, self.recorder.isRecording else { return }
+                    self.recorder.stop()
+                    if self.options.previewPresentation == nil {
+                        self.shutdown()
+                    }
+                }
+                durationWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: workItem)
+            }
+        } catch {
+            preview?.setRecordingStatus(false, message: "Recording failed: \(error.localizedDescription)")
+            emitEvent("error", ["message": error.localizedDescription])
+        }
+    }
+
+    private func stopRecording() {
+        durationWorkItem?.cancel()
+        durationWorkItem = nil
+        recorder.stop()
+    }
+
+    /// Window record button callback. Returns a status message.
+    private func toggleRecording(_ wantsRecording: Bool) -> String? {
+        if wantsRecording {
+            startRecording(overridePath: nil)
+            return nil // startRecording set the status
+        }
+        stopRecording()
+        return nil
+    }
+
+    private func handleRecorderEvent(_ event: RecorderEvent) {
+        switch event {
+        case .started(let url):
+            emitEvent("recordingStarted", ["path": url.path])
+        case .paused:
+            emitEvent("recordingPaused", [:])
+            preview?.setRecordingStatus(true, message: "Recording paused")
+        case .resumed:
+            emitEvent("recordingResumed", [:])
+            preview?.setRecordingStatus(true, message: "Recording resumed")
+        case .finished(let url, let metadataURL, let frames, let droppedAudio):
+            emitEvent("recordingFinished", [
+                "path": url.path,
+                "metadataPath": metadataURL.path,
+                "frames": frames,
+                "droppedAudioSamples": droppedAudio,
+            ])
+            preview?.setRecordingStatus(false, message: "Saved \(url.lastPathComponent)")
+            fputs("Recording saved to \(url.path)\n", stderr)
+        case .failed(let message):
+            emitEvent("error", ["message": message])
+            preview?.setRecordingStatus(false, message: "Recording failed: \(message)")
+        }
+    }
+
+    // MARK: Control input (stdin) & signals
+
+    private func startControlInput() {
+        Thread.detachNewThread { [weak self] in
+            while let line = readLine(strippingNewline: true) {
+                let command = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !command.isEmpty else { continue }
+                DispatchQueue.main.async {
+                    self?.handleControlCommand(command)
+                }
+            }
+        }
+    }
+
+    private func handleControlCommand(_ command: String) {
+        // Keywords are case-insensitive; arguments (e.g. output paths) keep
+        // their case, and the third token onwards is taken verbatim so paths
+        // with spaces work: `record start /tmp/My Recordings/out.mov`.
+        let rawParts = command.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
+        let parts = rawParts.map { $0.lowercased() }
+        switch parts.first {
+        case "pause":
+            recorder.pause()
+        case "resume":
+            recorder.resume()
+        case "record" where parts.count >= 2 && parts[1] == "start":
+            startRecording(overridePath: rawParts.count >= 3 ? rawParts[2] : nil)
+        case "record" where parts.count >= 2 && parts[1] == "stop":
+            stopRecording()
+        case "mode" where parts.count >= 2:
+            if let mode = GuardMode(rawValue: parts[1]) {
+                setMode(mode)
+                preview?.setGuardMode(mode)
+            } else {
+                emitEvent("error", ["message": "unknown mode \(parts[1])"])
+            }
+        case "mask" where parts.count >= 2:
+            switch parts[1] {
+            case "boxes": maskMode = .boundingBox
+            case "blackout": maskMode = .blackout
+            default: emitEvent("error", ["message": "unknown mask \(parts[1])"])
+            }
+        case "status":
+            printStatus()
+        case "stop", "quit", "exit":
+            shutdown()
+        default:
+            emitEvent("error", ["message": "unknown command: \(command)"])
+        }
+    }
+
+    private func installSignalHandler() {
+        signal(SIGINT, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        source.setEventHandler { [weak self] in
+            self?.shutdown()
+        }
+        source.resume()
+        sigintSource = source
+    }
+
+    private func shutdown() {
+        stopRecording()
+        axTimer?.cancel()
+        axTimer = nil
+        pump?.stop()
+        emitEvent("stopped", [:])
+        let capture = capture
+        Task {
+            await capture?.stop()
+            await MainActor.run {
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    private func printStatus() {
+        let now = ProcessInfo.processInfo.systemUptime
+        var payload: [String: Any] = [
+            "event": "status",
+            "recording": recorder.isRecording,
+            "paused": recorder.isPausedNow,
+            "guardMode": guardMode.rawValue,
+            "maskMode": maskMode.rawValue,
+            "target": capture?.geometry?.targetDescription ?? "unknown",
+            "preview": options.previewPresentation?.rawValue ?? "none",
+            "accessibilityTrusted": AccessibilityTextScanner.isTrusted,
+        ]
+        if let ocrAge = latestFreshness.ocrAge(at: now) {
+            payload["ocrAgeMs"] = (ocrAge * 1000).rounded()
+        }
+        if let axAge = latestFreshness.accessibilityAge(at: now) {
+            payload["accessibilityAgeMs"] = (axAge * 1000).rounded()
+        }
+        printJSON(payload)
+    }
+
+    private func emitEvent(_ name: String, _ fields: [String: Any]) {
+        guard options.jsonEvents else { return }
+        var payload = fields
+        payload["event"] = name
+        payload["at"] = ProcessInfo.processInfo.systemUptime
+        printJSON(payload)
+    }
+
+    private func printJSON(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let line = String(data: data, encoding: .utf8) else { return }
+        print(line)
+    }
+
+    // MARK: Accessibility detection
+
+    private func startAccessibilityScanningIfEnabled() {
+        guard options.accessibilityEnabled, options.remote == nil else { return }
+        AccessibilityTextScanner.requestTrustIfNeeded()
+
+        let processingOptions = options.processingOptions
+        axScanner = AccessibilityTextScanner(classifier: PIIClassifier(
+            needles: processingOptions.needles,
+            checkEmail: processingOptions.checkEmail,
+            checkPhone: processingOptions.checkPhone
+        ))
+
+        let interval = 1.0 / max(0.1, options.accessibilityFPS)
+        let timer = DispatchSource.makeTimerSource(queue: axQueue)
+        timer.schedule(deadline: .now() + interval, repeating: interval)
+        timer.setEventHandler { [weak self] in
+            self?.runAccessibilityScan()
+        }
+        timer.resume()
+        axTimer = timer
+    }
+
+    private func runAccessibilityScan() {
+        guard !axInFlight, let geometry = capture?.geometry, let axScanner else { return }
+        axInFlight = true
+        defer { axInFlight = false }
+
+        var windowTarget: CGWindowID?
+        if case .window(let id) = options.capture.target {
+            windowTarget = id
+        }
+
+        guard let boxes = axScanner.scan(geometry: geometry, windowTarget: windowTarget) else {
+            if !axWarnedNoTrust {
+                axWarnedNoTrust = true
+                fputs(
+                    "Accessibility detection inactive: grant Accessibility permission in "
+                        + "System Settings > Privacy & Security to enable it (OCR still runs).\n",
+                    stderr
+                )
+            }
+            return
+        }
+        let scannedAt = ProcessInfo.processInfo.systemUptime
+        detectionQueue.async { [weak self] in
+            self?.processor.updateAccessibilityBoxes(boxes, at: scannedAt)
+        }
+    }
+
+    // MARK: OCR detection scheduling (unchanged cadence model)
 
     private func scheduleDetectionIfNeeded(sample: FrameSample) {
         if options.remote != nil {
@@ -152,14 +479,16 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func detect(sample: FrameSample) {
         guard let processed = processor.process(sample: sample) else { return }
+        latestFreshness = processed.snapshot.freshness
         boxStore.update(processed.snapshot)
         logDetections(processed.detectedBoxes, snapshot: processed.snapshot)
     }
 
     private func setMode(_ mode: GuardMode) {
+        guardMode = mode
+        pump?.guardMode = mode
         detectionQueue.async { [weak self] in
             guard let self else { return }
-            self.guardMode = mode
             var updated = self.options.processingOptions
             updated.mode = mode
             self.processor.updateOptions(updated)
@@ -225,7 +554,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             return
         }
         let signature = boxes.map {
-            "\($0.kind.rawValue):len:\($0.matched.count):rect:\(rectBucket(for: $0.normalizedRect))"
+            "\($0.kind.rawValue):\($0.source.rawValue):len:\($0.matched.count):rect:\(rectBucket(for: $0.normalizedRect))"
         }.sorted().joined(separator: "|")
             + "|\(snapshot.guardMode.rawValue)|armed:\(snapshot.armed)"
         guard signature != lastLoggedSignature else { return }
@@ -235,6 +564,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             let payload: [String: Any] = [
                 "frameID": snapshot.frameID,
                 "kind": box.kind.rawValue,
+                "source": box.source.rawValue,
                 "matchedLength": box.matched.count,
                 "confidence": box.confidence,
                 "detectedAt": box.detectedAt,
@@ -247,10 +577,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
                     "height": box.normalizedRect.height,
                 ],
             ]
-            if let data = try? JSONSerialization.data(withJSONObject: payload),
-               let line = String(data: data, encoding: .utf8) {
-                print(line)
-            }
+            printJSON(payload)
         }
     }
 

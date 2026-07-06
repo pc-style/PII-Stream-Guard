@@ -151,7 +151,8 @@ final class BoxStabilizer {
             matched: current.matched,
             confidence: max(previous.confidence, current.confidence),
             normalizedRect: safeRect,
-            detectedAt: current.detectedAt
+            detectedAt: current.detectedAt,
+            source: current.source
         )
     }
 
@@ -161,7 +162,8 @@ final class BoxStabilizer {
             matched: box.matched,
             confidence: box.confidence,
             normalizedRect: clamped(box.normalizedRect.insetBy(dx: -safetyPadding, dy: -safetyPadding)),
-            detectedAt: box.detectedAt
+            detectedAt: box.detectedAt,
+            source: box.source
         )
     }
 

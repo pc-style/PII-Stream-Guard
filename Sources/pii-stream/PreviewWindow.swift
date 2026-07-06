@@ -127,32 +127,34 @@ final class PreviewView: NSView {
 
 final class PreviewWindowController: NSWindowController {
     private let previewView: PreviewView
-    private let frameStore: FrameStore
-    private let boxStore: BoxStore
     private let onModeChanged: (GuardMode) -> Void
+    private let onMaskChanged: (MaskMode) -> Void
+    private let onRecordToggle: (Bool) -> String?
     private let presentation: PreviewPresentation
-    private let recorder = PreviewRecorder()
     private let statusLabel = NSTextField(labelWithString: "")
-    private var timer: Timer?
+    private var modeControl: NSSegmentedControl?
     private var guardMode: GuardMode
-    private var maskMode: MaskMode = .boundingBox
+    private var maskMode: MaskMode
     private var isRecording = false
     private var lastDisplayedFrameID: UInt64?
     private var lastOverlaySignature: String?
 
     init(
-        frameStore: FrameStore,
-        boxStore: BoxStore,
         windowSize: CGSize,
         initialMode: GuardMode,
+        initialMaskMode: MaskMode = .boundingBox,
         presentation: PreviewPresentation = .window,
         placement: WindowPlacement = .center,
-        onModeChanged: @escaping (GuardMode) -> Void
+        shareable: Bool = true,
+        onModeChanged: @escaping (GuardMode) -> Void,
+        onMaskChanged: @escaping (MaskMode) -> Void = { _ in },
+        onRecordToggle: @escaping (Bool) -> String? = { _ in nil }
     ) {
-        self.frameStore = frameStore
-        self.boxStore = boxStore
         self.guardMode = initialMode
+        self.maskMode = initialMaskMode
         self.onModeChanged = onModeChanged
+        self.onMaskChanged = onMaskChanged
+        self.onRecordToggle = onRecordToggle
         self.presentation = presentation
         previewView = PreviewView(
             frame: NSRect(origin: .zero, size: windowSize),
@@ -160,12 +162,16 @@ final class PreviewWindowController: NSWindowController {
             mapsOverlayToBounds: presentation.mapsOverlayToBounds
         )
 
-        let window = Self.makeWindow(presentation: presentation, windowSize: windowSize, placement: placement)
+        let window = Self.makeWindow(
+            presentation: presentation,
+            windowSize: windowSize,
+            placement: placement,
+            shareable: shareable
+        )
 
         super.init(window: window)
         window.contentView = makeContentView(windowSize: window.frame.size)
         window.makeKeyAndOrderFront(nil)
-        startDisplayLoop()
     }
 
     @available(*, unavailable)
@@ -173,48 +179,13 @@ final class PreviewWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    deinit {
-        stopDisplayLoop()
-        recorder.stop()
-    }
+    /// Sink for the protected frame pump. Window presentation expects delayed,
+    /// fail-closed frames; overlay presentation expects immediate frames.
+    func render(_ frame: ProtectedFramePump.ProtectedFrame, maskMode: MaskMode) {
+        self.maskMode = maskMode
+        let sample = frame.sample
+        let snapshot = frame.snapshot
 
-    private func startDisplayLoop() {
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-        self.timer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func stopDisplayLoop() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    private func tick() {
-        let now = ProcessInfo.processInfo.systemUptime
-        let targetTime = presentation == .screenOverlay ? now : now - guardMode.renderDelay
-        let delayedSample = frameStore.sample(atOrBefore: targetTime)
-        let freshSnapshot = boxStore.snapshot(atOrBefore: targetTime, maxAge: guardMode.maxSnapshotAge)
-        let sample: FrameSample
-        let snapshot: DetectionSnapshot
-
-        if let freshSnapshot, let snapshotSample = frameStore.sample(frameID: freshSnapshot.frameID) {
-            sample = snapshotSample
-            snapshot = freshSnapshot
-        } else {
-            guard let delayedSample else { return }
-            sample = delayedSample
-            snapshot = DetectionSnapshot(
-                frameID: sample.id,
-                boxes: [],
-                frameSize: sample.frameSize,
-                capturedAt: sample.capturedAt,
-                guardMode: guardMode,
-                armed: true,
-                blackoutWholeFrame: presentation != .screenOverlay
-            )
-        }
         if sample.id != lastDisplayedFrameID {
             previewView.updateFrame(sample.pixelBuffer)
             lastDisplayedFrameID = sample.id
@@ -239,17 +210,23 @@ final class PreviewWindowController: NSWindowController {
             lastOverlaySignature = overlaySignature
         }
 
-        if isRecording {
-            recorder.append(
-                sample: sample,
-                boxes: snapshot.boxes,
-                maskMode: maskMode,
-                guardMode: guardMode,
-                isArmed: snapshot.armed,
-                blackoutWholeFrame: snapshot.blackoutWholeFrame
-            )
-        }
         updateStatus(boxCount: snapshot.boxes.count, armed: snapshot.armed)
+    }
+
+    /// Reflects a mode change initiated elsewhere (e.g. stdin control).
+    func setGuardMode(_ mode: GuardMode) {
+        guardMode = mode
+        lastOverlaySignature = nil
+        if let modeControl, let index = GuardMode.allCases.firstIndex(of: mode) {
+            modeControl.selectedSegment = index
+        }
+    }
+
+    func setRecordingStatus(_ recording: Bool, message: String?) {
+        isRecording = recording
+        if let message {
+            statusLabel.stringValue = message
+        }
     }
 
     private func makeContentView(windowSize: CGSize) -> NSView {
@@ -266,6 +243,7 @@ final class PreviewWindowController: NSWindowController {
             action: #selector(modeChanged(_:))
         )
         modeControl.selectedSegment = GuardMode.allCases.firstIndex(of: guardMode) ?? 1
+        self.modeControl = modeControl
 
         let maskControl = NSSegmentedControl(
             labels: ["Boxes", "Blackout"],
@@ -273,7 +251,7 @@ final class PreviewWindowController: NSWindowController {
             target: self,
             action: #selector(maskChanged(_:))
         )
-        maskControl.selectedSegment = 0
+        maskControl.selectedSegment = maskMode == .blackout ? 1 : 0
 
         let recordButton = NSButton(title: "Record", target: self, action: #selector(recordChanged(_:)))
         recordButton.setButtonType(.toggle)
@@ -307,23 +285,19 @@ final class PreviewWindowController: NSWindowController {
     @objc private func maskChanged(_ sender: NSSegmentedControl) {
         maskMode = sender.selectedSegment == 1 ? .blackout : .boundingBox
         lastOverlaySignature = nil
+        onMaskChanged(maskMode)
     }
 
     @objc private func recordChanged(_ sender: NSButton) {
-        if sender.state == .on {
-            do {
-                let url = try recorder.start()
-                isRecording = true
-                statusLabel.stringValue = "Recording \(url.lastPathComponent)"
-            } catch {
-                sender.state = .off
-                isRecording = false
-                statusLabel.stringValue = "Recording failed: \(error.localizedDescription)"
-            }
-        } else {
-            isRecording = false
-            recorder.stop()
-            statusLabel.stringValue = "Recording stopped"
+        let wantsRecording = sender.state == .on
+        let message = onRecordToggle(wantsRecording)
+        // The coordinator reports the actual state back through setRecordingStatus;
+        // reset the button if starting failed.
+        if wantsRecording, !isRecording {
+            sender.state = .off
+        }
+        if let message {
+            statusLabel.stringValue = message
         }
     }
 
@@ -366,7 +340,8 @@ final class PreviewWindowController: NSWindowController {
     private static func makeWindow(
         presentation: PreviewPresentation,
         windowSize: CGSize,
-        placement: WindowPlacement
+        placement: WindowPlacement,
+        shareable: Bool
     ) -> NSWindow {
         switch presentation {
         case .window:
@@ -376,8 +351,12 @@ final class PreviewWindowController: NSWindowController {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "PII-Stream Preview"
-            window.sharingType = .none
+            window.title = "PII-Stream Protected Output"
+            // Shareable by default: the whole point of the protected window is
+            // that OBS/Discord/Zoom capture it instead of the raw screen. The
+            // capture engine excludes this app from its own capture, so no
+            // feedback loop occurs.
+            window.sharingType = shareable ? .readOnly : .none
             window.contentView = NSView()
             if let screen = NSScreen.main, let frame = placement.frame(on: screen) {
                 window.setFrame(frame, display: true)

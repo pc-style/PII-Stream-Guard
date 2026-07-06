@@ -34,6 +34,8 @@ struct RemoteDetection: Codable {
     var matchedLength: Int
     var rect: RemoteRect
     var detectedAt: TimeInterval
+    /// Optional for wire compatibility with peers that predate detection sources.
+    var source: PIIDetectionSource?
 
     init(box: PIIBox) {
         kind = box.kind
@@ -41,6 +43,7 @@ struct RemoteDetection: Codable {
         matchedLength = box.matched.count
         rect = RemoteRect(box.normalizedRect)
         detectedAt = box.detectedAt
+        source = box.source
     }
 
     var box: PIIBox {
@@ -52,7 +55,8 @@ struct RemoteDetection: Codable {
             matched: String(repeating: "*", count: safeMatchedLength),
             confidence: safeConfidence,
             normalizedRect: safeRect,
-            detectedAt: detectedAt.isFinite ? detectedAt : 0
+            detectedAt: detectedAt.isFinite ? detectedAt : 0,
+            source: source ?? .ocr
         )
     }
 }

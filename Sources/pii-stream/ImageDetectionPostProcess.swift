@@ -43,7 +43,8 @@ enum ImageDetectionPostProcess {
             matched: anchor.matched,
             confidence: anchor.confidence,
             normalizedRect: CGRect(x: 0.01, y: y, width: 0.98, height: min(1 - y, rowH)),
-            detectedAt: anchor.detectedAt
+            detectedAt: anchor.detectedAt,
+            source: anchor.source
         )
     }
 
@@ -84,7 +85,8 @@ enum ImageDetectionPostProcess {
             matched: label.matched,
             confidence: label.confidence,
             normalizedRect: fullWidthRowMask(from: label, overrideY: y, overrideHeight: row + gap).normalizedRect,
-            detectedAt: label.detectedAt
+            detectedAt: label.detectedAt,
+            source: label.source
         )
     }
 
@@ -98,7 +100,8 @@ enum ImageDetectionPostProcess {
             matched: box.matched,
             confidence: box.confidence,
             normalizedRect: rect,
-            detectedAt: box.detectedAt
+            detectedAt: box.detectedAt,
+            source: box.source
         )
     }
 
@@ -113,7 +116,8 @@ enum ImageDetectionPostProcess {
                     matched: keep.matched,
                     confidence: max(merged.confidence, box.confidence),
                     normalizedRect: keep.normalizedRect,
-                    detectedAt: max(merged.detectedAt, box.detectedAt)
+                    detectedAt: max(merged.detectedAt, box.detectedAt),
+                    source: keep.source
                 )
             } else {
                 result.append(box)

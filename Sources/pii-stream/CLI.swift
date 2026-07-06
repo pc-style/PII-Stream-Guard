@@ -11,7 +11,16 @@ public struct WatchOptions {
     var remote: String?
     var token: String?
     var placement: WindowPlacement = .center
-    var previewPresentation: PreviewPresentation = .window
+    /// nil disables the preview entirely (headless protected recording).
+    var previewPresentation: PreviewPresentation? = .window
+    var capture = CaptureOptions()
+    /// Non-nil starts a protected recording on launch.
+    var recording: RecordingOptions?
+    var maskMode: MaskMode = .boundingBox
+    var accessibilityEnabled: Bool = true
+    var accessibilityFPS: Double = 5
+    var jsonEvents: Bool = false
+    var shareablePreview: Bool = true
 
     var processingOptions: FrameProcessingOptions {
         FrameProcessingOptions(
@@ -23,6 +32,10 @@ public struct WatchOptions {
             settingsOverride: settingsOverride
         )
     }
+}
+
+public struct TargetsOptions {
+    public var json: Bool = false
 }
 
 public struct ServeOptions {
@@ -43,6 +56,8 @@ public enum CLI {
         switch args[1] {
         case "watch":
             return .watch(try parseWatchOptions(Array(args.dropFirst(2))))
+        case "targets":
+            return .targets(try parseTargetsOptions(Array(args.dropFirst(2))))
         case "serve":
             return .serve(try parseServeOptions(Array(args.dropFirst(2))))
         case "benchmark":
@@ -124,12 +139,106 @@ public enum CLI {
                 options.placement = placement
             case "--preview":
                 i += 1
-                guard i < args.count, let presentation = PreviewPresentation(rawValue: args[i]) else {
+                guard i < args.count else { throw CLIError.missingValue("--preview") }
+                if args[i] == "none" {
+                    options.previewPresentation = nil
+                } else if let presentation = PreviewPresentation(rawValue: args[i]) {
+                    options.previewPresentation = presentation
+                } else {
                     throw CLIError.invalidValue("--preview")
                 }
-                options.previewPresentation = presentation
             case "--overlay":
                 options.previewPresentation = .screenOverlay
+            case "--private-window":
+                options.shareablePreview = false
+            case "--display":
+                i += 1
+                guard i < args.count, let id = UInt32(args[i]) else {
+                    throw CLIError.invalidValue("--display")
+                }
+                options.capture.target = .display(id)
+            case "--window":
+                i += 1
+                guard i < args.count, let id = UInt32(args[i]) else {
+                    throw CLIError.invalidValue("--window")
+                }
+                options.capture.target = .window(id)
+            case "--capture-fps":
+                i += 1
+                guard i < args.count, let fps = Int(args[i]), fps > 0, fps <= 120 else {
+                    throw CLIError.invalidValue("--capture-fps")
+                }
+                options.capture.captureFPS = fps
+            case "--resolution":
+                i += 1
+                guard i < args.count, let resolution = CaptureResolution(rawValue: args[i]) else {
+                    throw CLIError.invalidValue("--resolution")
+                }
+                options.capture.resolution = resolution
+            case "--no-cursor":
+                options.capture.showsCursor = false
+            case "--audio":
+                options.capture.capturesAudio = true
+                options.recording = options.recording ?? RecordingOptions()
+                options.recording?.includeAudio = true
+            case "--no-hide-self":
+                options.capture.hideOwnApp = false
+            case "--record":
+                options.recording = options.recording ?? RecordingOptions()
+            case "--output":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--output") }
+                options.recording = options.recording ?? RecordingOptions()
+                options.recording?.outputPath = args[i]
+            case "--codec":
+                i += 1
+                guard i < args.count, let codec = RecordingCodec(rawValue: args[i]) else {
+                    throw CLIError.invalidValue("--codec")
+                }
+                options.recording = options.recording ?? RecordingOptions()
+                options.recording?.codec = codec
+            case "--quality":
+                i += 1
+                guard i < args.count, let quality = RecordingQuality(rawValue: args[i]) else {
+                    throw CLIError.invalidValue("--quality")
+                }
+                options.recording = options.recording ?? RecordingOptions()
+                options.recording?.quality = quality
+            case "--record-fps":
+                i += 1
+                guard i < args.count, let fps = Int(args[i]), fps > 0, fps <= 60 else {
+                    throw CLIError.invalidValue("--record-fps")
+                }
+                options.recording = options.recording ?? RecordingOptions()
+                options.recording?.fps = fps
+            case "--duration":
+                i += 1
+                guard i < args.count, let duration = Double(args[i]), duration > 0 else {
+                    throw CLIError.invalidValue("--duration")
+                }
+                options.recording = options.recording ?? RecordingOptions()
+                options.recording?.duration = duration
+            case "--mask":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--mask") }
+                switch args[i] {
+                case "boxes", "boundingBox":
+                    options.maskMode = .boundingBox
+                case "blackout":
+                    options.maskMode = .blackout
+                default:
+                    throw CLIError.invalidValue("--mask")
+                }
+            case "--no-ax":
+                options.accessibilityEnabled = false
+            case "--ax-fps":
+                i += 1
+                guard i < args.count, let fps = Double(args[i]), fps > 0, fps <= 30 else {
+                    throw CLIError.invalidValue("--ax-fps")
+                }
+                options.accessibilityFPS = fps
+            case "--json-events":
+                options.jsonEvents = true
             case "--remote":
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--remote") }
@@ -145,6 +254,22 @@ public enum CLI {
         }
         if detectorOverrides.hasAny {
             options.settingsOverride = detectorOverrides.applied(to: options.mode.detectorSettings)
+        }
+        if options.previewPresentation == nil, options.recording == nil {
+            throw CLIError.invalidValue("--preview none requires --record (nothing to output otherwise)")
+        }
+        return options
+    }
+
+    private static func parseTargetsOptions(_ args: [String]) throws -> TargetsOptions {
+        var options = TargetsOptions()
+        for arg in args {
+            switch arg {
+            case "--json":
+                options.json = true
+            default:
+                throw CLIError.unknownFlag(arg)
+            }
         }
         return options
     }
@@ -347,10 +472,11 @@ public enum CLI {
     }
 
     public static let helpText = """
-    pii-stream — real-time PII detection on the main display
+    pii-stream — real-time protected screen capture, streaming, and recording
 
     Usage:
       pii-stream watch [options]
+      pii-stream targets [--json]
       pii-stream serve [options]
       pii-stream benchmark [options]
       pii-stream detect-image --image PATH [options] --json
@@ -360,7 +486,7 @@ public enum CLI {
       --no-email      Disable email regex detection
       --no-phone      Disable phone number detection
       --mode MODE     lockdown, standard, or low-latency (default: standard)
-      --fps N         Override mode detection rate
+      --fps N         Override mode OCR detection rate
       --accurate      Use accurate Vision OCR (slower)
       --min-text-height N
                      Override Vision minimum text height
@@ -371,11 +497,54 @@ public enum CLI {
       --position PLACEMENT
                      Preview window placement: center, left, or right
                      (default: center)
-      --preview MODE Preview mode: window or overlay (default: window)
+      --preview MODE Preview mode: window, overlay, or none (default: window)
+                     "none" requires --record
       --overlay      Alias for --preview overlay
+      --private-window
+                     Hide the protected window from other capture tools
+                     (by default it is shareable so OBS/Discord/Zoom can
+                     capture the protected output)
+      --mask MODE     boxes or blackout (default: boxes)
       --remote HOST:PORT
                      Send captured frames to a remote processor
       --token TOKEN   Shared token for remote processing
+      --json-events   Emit JSON lifecycle events on stdout
+
+    Capture options (watch):
+      --display ID    Capture a specific display (see `pii-stream targets`)
+      --window ID     Capture a single window (see `pii-stream targets`)
+      --capture-fps N Capture frame rate, 1-120 (default: 60)
+      --resolution R  native, 720p, 1080p, 2k, or 4k cap (default: native)
+      --no-cursor     Exclude the cursor from capture
+      --audio         Capture system audio into the recording (implies --record)
+      --no-hide-self  Do not exclude pii-stream's own windows from capture
+
+    Recording options (watch):
+      --record        Record protected output to a .mov (+ metadata .jsonl)
+      --output PATH   Recording output path (implies --record)
+      --codec C       h264 or hevc (default: hevc; implies --record)
+      --quality Q     efficient, balanced, or high (default: balanced)
+      --record-fps N  Recording frame rate, 1-60 (default: 30)
+      --duration N    Stop recording after N seconds (implies --record)
+
+    Detection sources (watch):
+      --no-ax         Disable accessibility-tree text detection
+      --ax-fps N      Accessibility scan rate (default: 5)
+                     Accessibility detection requires the Accessibility
+                     permission and is best-effort; Vision OCR always runs.
+
+    Runtime control (watch):
+      stdin accepts one command per line:
+        pause | resume        pause/resume the active recording
+        record start [PATH]   start a protected recording
+        record stop           stop and finalize the recording
+        mode MODE             switch guard mode
+        mask boxes|blackout   switch mask rendering
+        status                print a JSON status line
+        stop                  finalize any recording and quit
+
+    Targets options:
+      --json          Emit targets as JSON
 
     Serve options:
       --host HOST     Listen host (default: 127.0.0.1; use 0.0.0.0 for LAN)
@@ -425,6 +594,7 @@ public enum CLI {
 
 public enum Command {
     case watch(WatchOptions)
+    case targets(TargetsOptions)
     case serve(ServeOptions)
     case benchmark(BenchmarkOptions)
     case detectImage(DetectImageOptions)

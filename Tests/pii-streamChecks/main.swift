@@ -1,5 +1,6 @@
 import CoreGraphics
-import pii_stream
+import Foundation
+@testable import pii_stream
 
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {
@@ -131,8 +132,110 @@ func rectsAlmostEqual(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 0.001) 
         && abs(lhs.height - rhs.height) < tolerance
 }
 
+func checkCaptureSizing() {
+    check(CaptureEngine.evenDimension(1) == 2, "expected minimum even dimension of 2")
+    check(CaptureEngine.evenDimension(1471) == 1470, "expected odd dimension rounded down")
+    check(CaptureEngine.evenDimension(1470) == 1470, "expected even dimension preserved")
+
+    let native = CaptureEngine.outputSize(nativeWidth: 2940, nativeHeight: 1912, resolution: .native)
+    check(native.width == 2940 && native.height == 1912, "expected native passthrough")
+
+    let capped = CaptureEngine.outputSize(nativeWidth: 2940, nativeHeight: 1912, resolution: .r720p)
+    check(capped.width <= 1280 && capped.height <= 720, "expected 720p cap respected")
+    let aspectIn = Double(2940) / Double(1912)
+    let aspectOut = Double(capped.width) / Double(capped.height)
+    check(abs(aspectIn - aspectOut) < 0.01, "expected aspect ratio preserved when capping")
+
+    let noUpscale = CaptureEngine.outputSize(nativeWidth: 640, nativeHeight: 360, resolution: .r4k)
+    check(noUpscale.width == 640 && noUpscale.height == 360, "expected no upscaling")
+
+    let bitrateEfficient = RecordingOptions.targetBitrate(width: 1280, height: 720, fps: 30, quality: .efficient, codec: .hevc)
+    let bitrateHigh = RecordingOptions.targetBitrate(width: 1280, height: 720, fps: 30, quality: .high, codec: .hevc)
+    check(bitrateHigh > bitrateEfficient, "expected high quality to raise bitrate")
+    let bitrateH264 = RecordingOptions.targetBitrate(width: 1280, height: 720, fps: 30, quality: .balanced, codec: .h264)
+    let bitrateHEVC = RecordingOptions.targetBitrate(width: 1280, height: 720, fps: 30, quality: .balanced, codec: .hevc)
+    check(bitrateH264 > bitrateHEVC, "expected h264 to need more bits than hevc")
+    check(RecordingOptions.targetBitrate(width: 64, height: 64, fps: 5, quality: .efficient, codec: .hevc) == 1_500_000, "expected bitrate floor")
+}
+
+func checkAccessibilityCoordinateConversion() {
+    let capture = CGRect(x: 100, y: 50, width: 1000, height: 500)
+
+    // Element fully inside: top-left global -> bottom-left normalized (Vision).
+    let element = CGRect(x: 200, y: 100, width: 100, height: 50)
+    guard let normalized = AccessibilityTextScanner.normalizedRect(globalRect: element, in: capture) else {
+        fatalError("expected normalized rect for intersecting element")
+    }
+    check(rectsAlmostEqual(normalized, CGRect(x: 0.1, y: 0.8, width: 0.1, height: 0.1)), "expected Vision-convention normalized rect, got \(normalized)")
+
+    // Element at the top-left corner of the capture region maps to y near 1.
+    let corner = CGRect(x: 100, y: 50, width: 100, height: 50)
+    guard let cornerNormalized = AccessibilityTextScanner.normalizedRect(globalRect: corner, in: capture) else {
+        fatalError("expected normalized rect for corner element")
+    }
+    check(rectsAlmostEqual(cornerNormalized, CGRect(x: 0, y: 0.9, width: 0.1, height: 0.1)), "expected top-left element near normalized top, got \(cornerNormalized)")
+
+    // Partially outside: clipped to the capture region.
+    let overflowing = CGRect(x: 0, y: 0, width: 300, height: 100)
+    guard let clipped = AccessibilityTextScanner.normalizedRect(globalRect: overflowing, in: capture) else {
+        fatalError("expected clipped rect for overflowing element")
+    }
+    check(rectsAlmostEqual(clipped, CGRect(x: 0, y: 0.9, width: 0.2, height: 0.1)), "expected overflow clipped to capture, got \(clipped)")
+
+    // Fully outside: nothing.
+    check(AccessibilityTextScanner.normalizedRect(globalRect: CGRect(x: 5000, y: 5000, width: 10, height: 10), in: capture) == nil, "expected nil for non-intersecting element")
+}
+
+func checkDetectionSourceMerge() {
+    let rect = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05)
+    let now = 100.0
+    let ocrBox = PIIBox(kind: .email, matched: "jane@example.com", confidence: 0.6, normalizedRect: rect, detectedAt: now, source: .ocr)
+    let axBox = PIIBox(kind: .email, matched: "jane@example.com", confidence: 1.0, normalizedRect: rect.insetBy(dx: 0.01, dy: 0.005), detectedAt: now, source: .accessibility)
+
+    // Same PII, same place: accessibility bounds win, OCR duplicate dropped.
+    let merged = FrameProcessor.merge(ocr: [ocrBox], accessibility: [axBox])
+    check(merged.count == 1, "expected duplicate merged, got \(merged.count)")
+    check(merged.first?.source == .accessibility, "expected accessibility box preferred")
+
+    // Same PII, different place (two occurrences on screen): both kept.
+    let elsewhere = PIIBox(kind: .email, matched: "jane@example.com", confidence: 1.0, normalizedRect: CGRect(x: 0.7, y: 0.8, width: 0.2, height: 0.05), detectedAt: now, source: .accessibility)
+    check(FrameProcessor.merge(ocr: [ocrBox], accessibility: [elsewhere]).count == 2, "expected distinct locations kept")
+
+    // Different PII overlapping: both kept.
+    let differentPII = PIIBox(kind: .phone, matched: "555 123 4567", confidence: 1.0, normalizedRect: rect, detectedAt: now, source: .accessibility)
+    check(FrameProcessor.merge(ocr: [ocrBox], accessibility: [differentPII]).count == 2, "expected different PII kept")
+
+    // No accessibility data: OCR untouched.
+    check(FrameProcessor.merge(ocr: [ocrBox], accessibility: []).count == 1, "expected OCR passthrough")
+    check(FrameProcessor.merge(ocr: [ocrBox], accessibility: []).first?.source == .ocr, "expected OCR source preserved")
+}
+
+func checkPIIBoxSourceCoding() {
+    // Old payloads without a source field must decode as .ocr.
+    let legacyJSON = """
+    {"kind":"email","matched":"a@b.co","confidence":0.5,"normalizedRect":[[0.1,0.2],[0.3,0.1]],"detectedAt":1}
+    """
+    let decoder = JSONDecoder()
+    guard let legacy = try? decoder.decode(PIIBox.self, from: Data(legacyJSON.utf8)) else {
+        fatalError("expected legacy PIIBox JSON to decode")
+    }
+    check(legacy.source == .ocr, "expected legacy payload to default to ocr source")
+
+    let encoder = JSONEncoder()
+    let box = PIIBox(kind: .needle, matched: "x", confidence: 1, normalizedRect: .zero, detectedAt: 2, source: .accessibility)
+    guard let data = try? encoder.encode(box),
+          let roundTripped = try? decoder.decode(PIIBox.self, from: data) else {
+        fatalError("expected PIIBox round trip")
+    }
+    check(roundTripped.source == .accessibility, "expected source to survive round trip")
+}
+
 checkClassifier()
 checkFrameMasker()
 checkProtectedRenderingRecipes()
 checkDetectionRecipe()
+checkCaptureSizing()
+checkAccessibilityCoordinateConversion()
+checkDetectionSourceMerge()
+checkPIIBoxSourceCoding()
 print("pii-stream checks passed")
