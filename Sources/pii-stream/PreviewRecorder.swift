@@ -166,36 +166,15 @@ final class PreviewRecorder {
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return }
 
-        if blackoutWholeFrame {
-            context.setFillColor(CGColor(gray: 0, alpha: 1))
-            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            return
-        }
-
-        for box in boxes {
-            var rect = FrameMasker.pixelRect(from: box.normalizedRect, frameSize: CGSize(width: width, height: height))
-            if maskMode == .blackout, FrameMasker.usesBuiltInMasking(for: guardMode) {
-                rect = FrameMasker.builtInBlackoutRect(
-                    rect,
-                    within: CGRect(x: 0, y: 0, width: width, height: height)
-                )
-            }
-            let drawRect = CGRect(
-                x: rect.origin.x,
-                y: CGFloat(height) - rect.maxY,
-                width: rect.width,
-                height: rect.height
-            )
-            switch maskMode {
-            case .blackout:
-                context.setFillColor(CGColor(gray: 0, alpha: 1))
-                context.fill(drawRect)
-            case .boundingBox:
-                context.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
-                context.setLineWidth(4)
-                context.stroke(drawRect)
-            }
-        }
+        FrameMasker.drawMasks(
+            in: context,
+            frameSize: CGSize(width: width, height: height),
+            boxes: boxes,
+            maskMode: maskMode,
+            guardMode: guardMode,
+            blackoutWholeFrame: blackoutWholeFrame,
+            rectMapping: .topLeftToBottomLeft
+        )
     }
 
     private func writeMetadata(

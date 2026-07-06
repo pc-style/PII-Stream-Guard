@@ -202,15 +202,7 @@ public final class BenchmarkRunner {
     }
 
     private func benchmark(resolution: ResolutionCase, frames: [CVPixelBuffer]) throws -> ResolutionMetrics {
-        let detector = VisionPIIDetector(
-            needles: options.needles,
-            checkEmail: options.checkEmail,
-            checkPhone: options.checkPhone,
-            accurate: detectorSettings.accurate,
-            maxPixelSize: detectorSettings.maxPixelSize,
-            minimumTextHeight: detectorSettings.minimumTextHeight,
-            enhanceLowContrast: detectorSettings.enhanceLowContrast
-        )
+        let detector = DetectionRecipe.benchmark(options, settings: detectorSettings).makeDetector()
 
         var latencies: [Double] = []
         var hitCount = 0

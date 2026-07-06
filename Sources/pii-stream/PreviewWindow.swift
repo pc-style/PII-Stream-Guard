@@ -77,47 +77,26 @@ final class PreviewView: NSView {
         guard frameSize.width > 0, frameSize.height > 0 else { return }
 
         let viewBounds = bounds
-        let scaleX: CGFloat
-        let scaleY: CGFloat
-        let offsetX: CGFloat
-        let offsetY: CGFloat
-        if mapsOverlayToBounds {
-            scaleX = 1
-            scaleY = 1
-            offsetX = 0
-            offsetY = 0
-        } else {
-            let scale = min(viewBounds.width / frameSize.width, viewBounds.height / frameSize.height)
-            let drawnWidth = frameSize.width * scale
-            let drawnHeight = frameSize.height * scale
-            scaleX = scale
-            scaleY = scale
-            offsetX = (viewBounds.width - drawnWidth) / 2
-            offsetY = (viewBounds.height - drawnHeight) / 2
-        }
+        let overlayRects = FrameMasker.overlayRects(
+            for: boxes,
+            frameSize: frameSize,
+            viewBounds: viewBounds,
+            maskMode: maskMode,
+            usesBuiltInMasking: usesBuiltInMasking,
+            blackoutWholeFrame: blackoutWholeFrame,
+            mapsOverlayToBounds: mapsOverlayToBounds
+        )
 
         if blackoutWholeFrame {
+            guard let blackoutRect = overlayRects.first else { return }
             let blackoutLayer = CALayer()
-            blackoutLayer.frame = viewBounds
+            blackoutLayer.frame = blackoutRect
             blackoutLayer.backgroundColor = NSColor.black.cgColor
             overlayLayer.addSublayer(blackoutLayer)
             return
         }
 
-        for box in boxes {
-            let rect = mapsOverlayToBounds
-                ? FrameMasker.pixelRect(from: box.normalizedRect, frameSize: viewBounds.size)
-                : FrameMasker.pixelRect(from: box.normalizedRect, frameSize: frameSize)
-            var scaled = CGRect(
-                x: offsetX + rect.origin.x * scaleX,
-                y: offsetY + rect.origin.y * scaleY,
-                width: rect.width * scaleX,
-                height: rect.height * scaleY
-            )
-            if maskMode == .blackout, usesBuiltInMasking {
-                scaled = FrameMasker.builtInBlackoutRect(scaled, within: viewBounds)
-            }
-
+        for (box, scaled) in zip(boxes, overlayRects) {
             let boxLayer = CALayer()
             boxLayer.frame = scaled
             switch maskMode {

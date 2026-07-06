@@ -48,12 +48,15 @@ enum FrameCodec {
         return try pixelBuffer(from: cgImage)
     }
 
-    static func protectedJPEGData(
+    static func protectedCGImage(
         from buffer: CVPixelBuffer,
-        snapshot: DetectionSnapshot,
+        boxes: [PIIBox],
+        guardMode: GuardMode,
         maskMode: MaskMode = .blackout,
-        quality: CGFloat = 0.72
-    ) throws -> Data {
+        blackoutWholeFrame: Bool = false,
+        attribution: ImageAttributionStyle = .none,
+        presentation: ImageOutputPresentation = .standard
+    ) throws -> CGImage {
         let source = CIImage(cvPixelBuffer: buffer)
         guard let cgImage = ciContext.createCGImage(source, from: source.extent) else {
             throw FrameCodecError.cannotCreateImage
@@ -73,29 +76,46 @@ enum FrameCodec {
             throw FrameCodecError.cannotCreateBitmap
         }
 
+        let frameSize = CGSize(width: width, height: height)
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        context.setFillColor(NSColor.black.cgColor)
-        if snapshot.blackoutWholeFrame {
-            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        } else if maskMode == .blackout {
-            let frameBounds = CGRect(x: 0, y: 0, width: width, height: height)
-            for box in snapshot.boxes {
-                var rect = FrameMasker.pixelRect(
-                    from: box.normalizedRect,
-                    frameSize: CGSize(width: width, height: height)
-                )
-                if FrameMasker.usesBuiltInMasking(for: snapshot.guardMode) {
-                    rect = FrameMasker.builtInBlackoutRect(rect, within: frameBounds)
-                } else {
-                    rect = rect.insetBy(dx: -12, dy: -8).intersection(frameBounds)
-                }
-                context.fill(rect)
-            }
+        if blackoutWholeFrame || !boxes.isEmpty {
+            FrameMasker.drawMasks(
+                in: context,
+                frameSize: frameSize,
+                boxes: boxes,
+                maskMode: maskMode,
+                guardMode: guardMode,
+                blackoutWholeFrame: blackoutWholeFrame,
+                rectMapping: .topLeftToBottomLeft,
+                presentation: presentation
+            )
+        }
+        if presentation == .demo {
+            ImageDemoFrame.draw(in: context, imageSize: frameSize)
+        } else {
+            ImageAttribution.draw(in: context, imageSize: frameSize, style: attribution)
         }
 
         guard let protectedImage = context.makeImage() else {
             throw FrameCodecError.cannotCreateImage
         }
+        return protectedImage
+    }
+
+    static func protectedJPEGData(
+        from buffer: CVPixelBuffer,
+        snapshot: DetectionSnapshot,
+        maskMode: MaskMode = .blackout,
+        quality: CGFloat = 0.72
+    ) throws -> Data {
+        let protectedImage = try protectedCGImage(
+            from: buffer,
+            boxes: snapshot.boxes,
+            guardMode: snapshot.guardMode,
+            maskMode: maskMode,
+            blackoutWholeFrame: snapshot.blackoutWholeFrame,
+            attribution: .none
+        )
         let bitmap = NSBitmapImageRep(cgImage: protectedImage)
         guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
             throw FrameCodecError.cannotEncode

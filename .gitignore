@@ -12,3 +12,5 @@ DerivedData/
 benchmark-results/
 recordings/
 .pi/
+.test/
+.firecrawl/

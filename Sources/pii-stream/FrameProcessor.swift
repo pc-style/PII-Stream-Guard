@@ -45,7 +45,7 @@ final class FrameProcessor {
 
     init(options: FrameProcessingOptions) {
         self.options = options
-        detector = Self.makeDetector(options: options)
+        detector = DetectionRecipe.frameProcessor(options).makeDetector()
         guardState = GuardStateMachine(mode: options.mode)
     }
 
@@ -53,7 +53,7 @@ final class FrameProcessor {
         guard options != self.options else { return }
         let modeChanged = options.mode != self.options.mode
         self.options = options
-        detector = Self.makeDetector(options: options)
+        detector = DetectionRecipe.frameProcessor(options).makeDetector()
         if modeChanged {
             guardState.setMode(options.mode)
             stabilizer.reset()
@@ -93,16 +93,4 @@ final class FrameProcessor {
         )
     }
 
-    private static func makeDetector(options: FrameProcessingOptions) -> VisionPIIDetector {
-        let settings = options.settingsOverride ?? options.mode.detectorSettings
-        return VisionPIIDetector(
-            needles: options.needles,
-            checkEmail: options.checkEmail,
-            checkPhone: options.checkPhone,
-            accurate: settings.accurate,
-            maxPixelSize: settings.maxPixelSize,
-            minimumTextHeight: settings.minimumTextHeight,
-            enhanceLowContrast: settings.enhanceLowContrast
-        )
-    }
 }

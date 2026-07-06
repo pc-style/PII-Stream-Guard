@@ -92,10 +92,13 @@ Benchmark the live capture and OCR path:
 pii-stream benchmark --duration 5 --output benchmark-results/latest.json --csv benchmark-results/latest.csv
 ```
 
-Scan a static image:
+Scan a static image (writes a protected PNG and prints JSON with `savedImagePath`):
 
 ```bash
 pii-stream detect-image --image ./screenshot.png --json
+# default: ./screenshot-protected.png with a small "saved by PII-STREAM-GUARD" badge
+pii-stream detect-image --image ./screenshot.png --output ./redacted.png --no-badge
+pii-stream detect-image --image ./screenshot.png --watermark
 ```
 
 ## Build From Source

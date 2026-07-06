@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreImage
 import CoreVideo
@@ -10,6 +11,10 @@ public struct DetectImageOptions {
     public var checkPhone: Bool
     public var mode: GuardMode
     public var settingsOverride: DetectorSettings?
+    /// When set, write the protected PNG here; otherwise derive `*-protected.png` beside the source.
+    public var outputPath: String?
+    public var attribution: ImageAttributionStyle
+    public var presentation: ImageOutputPresentation
 
     public init(
         imagePath: String,
@@ -17,7 +22,10 @@ public struct DetectImageOptions {
         checkEmail: Bool = true,
         checkPhone: Bool = true,
         mode: GuardMode = .standard,
-        settingsOverride: DetectorSettings? = nil
+        settingsOverride: DetectorSettings? = nil,
+        outputPath: String? = nil,
+        attribution: ImageAttributionStyle = .badge,
+        presentation: ImageOutputPresentation = .standard
     ) {
         self.imagePath = imagePath
         self.needles = needles
@@ -25,6 +33,9 @@ public struct DetectImageOptions {
         self.checkPhone = checkPhone
         self.mode = mode
         self.settingsOverride = settingsOverride
+        self.outputPath = outputPath
+        self.attribution = attribution
+        self.presentation = presentation
     }
 }
 
@@ -38,23 +49,21 @@ public struct ImageDetectionRunner {
     public func run() throws {
         let started = DispatchTime.now().uptimeNanoseconds
         let buffer = try loadPixelBuffer(path: options.imagePath)
-        let settings = options.settingsOverride ?? options.mode.detectorSettings
-        let detector = VisionPIIDetector(
-            needles: options.needles,
-            checkEmail: options.checkEmail,
-            checkPhone: options.checkPhone,
-            accurate: settings.accurate,
-            maxPixelSize: settings.maxPixelSize,
-            minimumTextHeight: settings.minimumTextHeight,
-            enhanceLowContrast: settings.enhanceLowContrast
-        )
-        let boxes = detector.detect(in: buffer)
+        var runOptions = options
+        if runOptions.needles.isEmpty {
+            runOptions.needles = Self.defaultSecretNeedles
+        }
+        let detector = DetectionRecipe.imageDetection(runOptions).makeDetector()
+        let rawBoxes = detector.detect(in: buffer)
+        let boxes = ImageDetectionPostProcess.boxesForProtectedImage(rawBoxes)
+        let savedPath = try writeProtectedImage(buffer: buffer, boxes: boxes)
         let ended = DispatchTime.now().uptimeNanoseconds
         let output = ImageDetectionOutput(
             imagePath: options.imagePath,
+            savedImagePath: savedPath,
             width: CVPixelBufferGetWidth(buffer),
             height: CVPixelBufferGetHeight(buffer),
-            detections: boxes.map(ImageDetectionOutput.Detection.init(box:)),
+            detections: rawBoxes.map(ImageDetectionOutput.Detection.init(box:)),
             latencyMs: Double(ended - started) / 1_000_000
         )
 
@@ -63,6 +72,41 @@ public struct ImageDetectionRunner {
         let data = try encoder.encode(output)
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+
+    private func writeProtectedImage(buffer: CVPixelBuffer, boxes: [PIIBox]) throws -> String {
+        let path = options.outputPath ?? Self.defaultProtectedPath(for: options.imagePath)
+        let attribution: ImageAttributionStyle = options.presentation == .demo ? .none : options.attribution
+        let protected = try FrameCodec.protectedCGImage(
+            from: buffer,
+            boxes: boxes,
+            guardMode: options.mode,
+            maskMode: .blackout,
+            blackoutWholeFrame: false,
+            attribution: attribution,
+            presentation: options.presentation
+        )
+        let bitmap = NSBitmapImageRep(cgImage: protected)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw ImageDetectionError.cannotWriteProtectedImage(path)
+        }
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try png.write(to: url, options: .atomic)
+        return path
+    }
+
+    /// OCR-friendly needles for terminal deploy keys when the caller passes none.
+    static let defaultSecretNeedles = ["eyJ", "dev:", "rugged-gnat"]
+
+    static func defaultProtectedPath(for imagePath: String) -> String {
+        let url = URL(fileURLWithPath: imagePath)
+        let base = url.deletingPathExtension().lastPathComponent
+        let dir = url.deletingLastPathComponent().path
+        return (dir as NSString).appendingPathComponent("\(base)-protected.png")
     }
 
     private func loadPixelBuffer(path: String) throws -> CVPixelBuffer {
@@ -101,6 +145,7 @@ public struct ImageDetectionRunner {
 
 private struct ImageDetectionOutput: Encodable {
     let imagePath: String
+    let savedImagePath: String
     let width: Int
     let height: Int
     let detections: [Detection]
@@ -138,6 +183,7 @@ private struct ImageDetectionOutput: Encodable {
 enum ImageDetectionError: Error, LocalizedError {
     case unreadableImage(String)
     case pixelBufferCreateFailed(CVReturn)
+    case cannotWriteProtectedImage(String)
 
     var errorDescription: String? {
         switch self {
@@ -145,6 +191,8 @@ enum ImageDetectionError: Error, LocalizedError {
             return "Could not read image at \(path)."
         case .pixelBufferCreateFailed(let status):
             return "Could not create image pixel buffer: CVReturn \(status)."
+        case .cannotWriteProtectedImage(let path):
+            return "Could not write protected image to \(path)."
         }
     }
 }

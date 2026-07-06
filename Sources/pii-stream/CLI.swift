@@ -178,10 +178,13 @@ public enum CLI {
 
     private static func parseDetectImageOptions(_ args: [String]) throws -> DetectImageOptions {
         var imagePath: String?
+        var outputPath: String?
         var needles: [String] = []
         var checkEmail = true
         var checkPhone = true
         var mode: GuardMode = .standard
+        var attribution: ImageAttributionStyle = .badge
+        var presentation: ImageOutputPresentation = .standard
         var detectorOverrides = DetectorOverrideFlags()
         var i = 0
         while i < args.count {
@@ -190,12 +193,26 @@ public enum CLI {
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--image") }
                 imagePath = args[i]
+            case "--output":
+                i += 1
+                guard i < args.count else { throw CLIError.missingValue("--output") }
+                outputPath = args[i]
             case "--needle":
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--needle") }
                 needles.append(args[i])
             case "--json":
                 break
+            case "--no-badge":
+                if attribution == .watermark {
+                    throw CLIError.invalidValue("--no-badge (incompatible with --watermark)")
+                }
+                attribution = .none
+            case "--watermark":
+                if attribution == .none {
+                    throw CLIError.invalidValue("--watermark (incompatible with --no-badge)")
+                }
+                attribution = .watermark
             case "--no-email":
                 checkEmail = false
             case "--no-phone":
@@ -222,6 +239,8 @@ public enum CLI {
                 detectorOverrides.maxPixelSize = CGFloat(value)
             case "--enhance-low-contrast":
                 detectorOverrides.enhanceLowContrast = true
+            case "--demo":
+                presentation = .demo
             default:
                 throw CLIError.unknownFlag(args[i])
             }
@@ -237,7 +256,10 @@ public enum CLI {
             mode: mode,
             settingsOverride: detectorOverrides.hasAny
                 ? detectorOverrides.applied(to: mode.detectorSettings)
-                : nil
+                : nil,
+            outputPath: outputPath,
+            attribution: attribution,
+            presentation: presentation
         )
     }
 
@@ -375,9 +397,13 @@ public enum CLI {
       --csv PATH      Write CSV summary to PATH
 
     Detect image options:
-      --image PATH    Image to scan
+      --image PATH    Image to scan (required)
+      --output PATH   Protected PNG path (default: <image>-protected.png)
       --needle TEXT   Additional PII needle to match (repeatable)
       --json          Emit detector JSON for benchmark adapters
+      --no-badge      Omit the default corner badge on saved image
+      --watermark     Use a diagonal watermark instead of the badge
+      --demo          Shareable export: site-style frame + visible redaction bars
       --no-email      Disable email regex detection
       --no-phone      Disable phone number detection
       --mode MODE     lockdown, standard, or low-latency (default: standard)
@@ -388,6 +414,9 @@ public enum CLI {
                      Override longest OCR side after downscale
       --enhance-low-contrast
                      Boost contrast/sharpness before OCR
+
+    detect-image always writes a protected PNG and prints JSON including
+    savedImagePath. Badge attribution is on by default for detect-image only.
 
     General:
       -h, --help      Show this help
