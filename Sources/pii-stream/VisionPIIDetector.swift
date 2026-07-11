@@ -14,6 +14,7 @@ struct VisionPIIDetector: PIIDetector {
     let enhanceLowContrast: Bool
 
     private let classifier: PIIClassifier
+    private let request: VNRecognizeTextRequest
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     init(
@@ -33,14 +34,15 @@ struct VisionPIIDetector: PIIDetector {
         self.minimumTextHeight = minimumTextHeight
         self.enhanceLowContrast = enhanceLowContrast
         classifier = PIIClassifier(needles: needles, checkEmail: checkEmail, checkPhone: checkPhone)
-    }
-
-    func detect(in pixelBuffer: CVPixelBuffer) -> [PIIBox] {
-        let scaled = prepareForOCR(pixelBuffer)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = accurate ? .accurate : .fast
         request.usesLanguageCorrection = false
         request.minimumTextHeight = minimumTextHeight
+        self.request = request
+    }
+
+    func detect(in pixelBuffer: CVPixelBuffer) -> [PIIBox] {
+        let scaled = prepareForOCR(pixelBuffer)
 
         let handler = VNImageRequestHandler(cvPixelBuffer: scaled, options: [:])
         do {
@@ -50,8 +52,12 @@ struct VisionPIIDetector: PIIDetector {
         }
 
         let now = ProcessInfo.processInfo.systemUptime
+        // Alternative candidates triple classification and range-box work. Fast
+        // OCR is optimized for cadence, while accurate/lockdown mode keeps the
+        // broader candidate search for maximum recall.
+        let candidateCount = accurate ? 3 : 1
         let fragments = (request.results ?? []).flatMap { observation in
-            observation.topCandidates(3).map { candidate in
+            observation.topCandidates(candidateCount).map { candidate in
                 RecognizedTextFragment(
                     raw: candidate.string,
                     confidence: candidate.confidence,
@@ -76,20 +82,11 @@ struct VisionPIIDetector: PIIDetector {
 
         guard scale != 1 || enhanceLowContrast else { return buffer }
 
-        var output: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-        ]
-        CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            newWidth,
-            newHeight,
-            CVPixelBufferGetPixelFormatType(buffer),
-            attrs as CFDictionary,
-            &output
-        )
-        guard let out = output else { return buffer }
+        guard let out = PixelBufferUtils.makeBuffer(
+            width: newWidth,
+            height: newHeight,
+            pixelFormat: CVPixelBufferGetPixelFormatType(buffer)
+        ) else { return buffer }
 
         var image = CIImage(cvPixelBuffer: buffer)
         if enhanceLowContrast {

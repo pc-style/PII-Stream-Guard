@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreImage
 import CoreVideo
 import Foundation
+import ImageIO
 
 enum FrameCodecError: Error, LocalizedError {
     case cannotCreateImage
@@ -28,24 +29,55 @@ enum FrameCodec {
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private static let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-    static func jpegData(from buffer: CVPixelBuffer, quality: CGFloat = 0.72) throws -> Data {
-        let image = CIImage(cvPixelBuffer: buffer)
-        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
-            throw FrameCodecError.cannotCreateImage
+    static func jpegData(
+        from buffer: CVPixelBuffer,
+        quality: CGFloat = 0.72,
+        maxPixelSize: CGFloat? = nil
+    ) throws -> Data {
+        var image = CIImage(cvPixelBuffer: buffer)
+        if let maxPixelSize, maxPixelSize > 0 {
+            let longest = max(image.extent.width, image.extent.height)
+            if longest > maxPixelSize {
+                let scale = maxPixelSize / longest
+                image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            }
         }
-        let bitmap = NSBitmapImageRep(cgImage: cgImage)
-        guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
+        let options = [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
+        ]
+        guard let data = ciContext.jpegRepresentation(
+            of: image,
+            colorSpace: colorSpace,
+            options: options
+        ) else {
             throw FrameCodecError.cannotEncode
         }
         return data
     }
 
     static func pixelBuffer(from data: Data) throws -> CVPixelBuffer {
-        guard let image = NSImage(data: data),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard let image = CIImage(data: data),
+              image.extent.width.isFinite,
+              image.extent.height.isFinite else {
             throw FrameCodecError.cannotDecode
         }
-        return try pixelBuffer(from: cgImage)
+        let width = Int(image.extent.width.rounded())
+        let height = Int(image.extent.height.rounded())
+        guard width > 0, height > 0,
+              let buffer = PixelBufferUtils.makeBuffer(
+                  width: width,
+                  height: height,
+                  pixelFormat: kCVPixelFormatType_32BGRA
+              ) else {
+            throw FrameCodecError.cannotDecode
+        }
+        ciContext.render(
+            image,
+            to: buffer,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height),
+            colorSpace: colorSpace
+        )
+        return buffer
     }
 
     static func protectedCGImage(
@@ -121,43 +153,6 @@ enum FrameCodec {
             throw FrameCodecError.cannotEncode
         }
         return data
-    }
-
-    private static func pixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
-        var buffer: CVPixelBuffer?
-        let attributes: [String: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        ]
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            image.width,
-            image.height,
-            kCVPixelFormatType_32BGRA,
-            attributes as CFDictionary,
-            &buffer
-        )
-        guard status == kCVReturnSuccess, let buffer else {
-            throw FrameCodecError.cannotDecode
-        }
-
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        guard let context = CGContext(
-            data: CVPixelBufferGetBaseAddress(buffer),
-            width: image.width,
-            height: image.height,
-            bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else {
-            throw FrameCodecError.cannotCreateBitmap
-        }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        return buffer
     }
 
 }

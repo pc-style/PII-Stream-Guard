@@ -1,14 +1,20 @@
 import AppKit
+import AVFoundation
 import CoreGraphics
-import CoreImage
+import CoreMedia
 import CoreVideo
 import Foundation
 
 final class PreviewView: NSView {
-    private let frameLayer = CALayer()
+    private let frameLayer = AVSampleBufferDisplayLayer()
     private let overlayLayer = CALayer()
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private let showsCapturedFrame: Bool
+    private var frameFormat: (
+        width: Int,
+        height: Int,
+        pixelFormat: OSType,
+        description: CMVideoFormatDescription
+    )?
     private let mapsOverlayToBounds: Bool
 
     var boxes: [PIIBox] = []
@@ -24,7 +30,7 @@ final class PreviewView: NSView {
         wantsLayer = true
         layer?.backgroundColor = showsCapturedFrame ? NSColor.black.cgColor : NSColor.clear.cgColor
 
-        frameLayer.contentsGravity = .resizeAspect
+        frameLayer.videoGravity = .resizeAspect
         frameLayer.frame = bounds
         frameLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
 
@@ -46,11 +52,46 @@ final class PreviewView: NSView {
 
     func updateFrame(_ buffer: CVPixelBuffer) {
         guard showsCapturedFrame else { return }
-        let image = CIImage(cvPixelBuffer: buffer)
-        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.frameLayer.contents = cgImage
+        let renderer = frameLayer.sampleBufferRenderer
+        if renderer.status == .failed {
+            renderer.flush()
         }
+        guard renderer.isReadyForMoreMediaData else { return }
+
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(buffer)
+        let formatDescription: CMVideoFormatDescription
+        if let frameFormat,
+           frameFormat.width == width,
+           frameFormat.height == height,
+           frameFormat.pixelFormat == pixelFormat {
+            formatDescription = frameFormat.description
+        } else {
+            var created: CMVideoFormatDescription?
+            guard CMVideoFormatDescriptionCreateForImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: buffer,
+                formatDescriptionOut: &created
+            ) == noErr, let created else { return }
+            frameFormat = (width, height, pixelFormat, created)
+            formatDescription = created
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: .invalid,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        guard CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: buffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        ) == noErr, let sampleBuffer else { return }
+        renderer.enqueue(sampleBuffer)
     }
 
     func updateOverlay(

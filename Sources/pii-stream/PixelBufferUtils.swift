@@ -4,36 +4,81 @@ import CoreVideo
 import Foundation
 
 enum PixelBufferUtils {
+    private struct PoolKey: Hashable {
+        let width: Int
+        let height: Int
+        let pixelFormat: OSType
+    }
+
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private static let rgbColorSpace = CGColorSpaceCreateDeviceRGB()
+    private static let poolLock = NSLock()
+    private static var pools: [PoolKey: CVPixelBufferPool] = [:]
+
+    static func makeBuffer(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBuffer? {
+        let key = PoolKey(width: width, height: height, pixelFormat: pixelFormat)
+        poolLock.lock()
+        let pool: CVPixelBufferPool?
+        if let existing = pools[key] {
+            pool = existing
+        } else {
+            let poolAttributes = [
+                kCVPixelBufferPoolMinimumBufferCountKey as String: 3,
+            ] as CFDictionary
+            let pixelAttributes: [String: Any] = [
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+                kCVPixelBufferCGImageCompatibilityKey as String: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+            ]
+            var created: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(
+                kCFAllocatorDefault,
+                poolAttributes,
+                pixelAttributes as CFDictionary,
+                &created
+            )
+            if let created {
+                pools[key] = created
+            }
+            pool = created
+        }
+        poolLock.unlock()
+
+        var buffer: CVPixelBuffer?
+        if let pool,
+           CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer) == kCVReturnSuccess {
+            return buffer
+        }
+
+        let fallbackAttributes: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            pixelFormat,
+            fallbackAttributes as CFDictionary,
+            &buffer
+        )
+        return buffer
+    }
 
     static func copy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
         let format = CVPixelBufferGetPixelFormatType(source)
-        var destination: CVPixelBuffer?
-
         // Keep the destination layout compatible with the source. We still copy
         // row-by-row below, because CoreVideo may give the destination a
         // different bytesPerRow (row padding/alignment) than the source — a
         // single memcpy sized by the source stride would then overrun the
         // destination and crash (EXC_BAD_ACCESS).
-        let attributes: [String: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-        ]
-
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            format,
-            attributes as CFDictionary,
-            &destination
-        )
-
-        guard status == kCVReturnSuccess, let dest = destination else {
+        guard let dest = makeBuffer(width: width, height: height, pixelFormat: format) else {
             return nil
         }
 
@@ -78,28 +123,14 @@ enum PixelBufferUtils {
 
     static func resized(_ source: CVPixelBuffer, width: Int, height: Int) -> CVPixelBuffer? {
         if CVPixelBufferGetWidth(source) == width, CVPixelBufferGetHeight(source) == height {
-            return copy(source)
+            return source
         }
 
-        var destination: CVPixelBuffer?
-        let attributes: [String: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        ]
-
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            attributes as CFDictionary,
-            &destination
-        )
-
-        guard status == kCVReturnSuccess, let dest = destination else {
+        guard let dest = makeBuffer(
+            width: width,
+            height: height,
+            pixelFormat: kCVPixelFormatType_32BGRA
+        ) else {
             return nil
         }
 

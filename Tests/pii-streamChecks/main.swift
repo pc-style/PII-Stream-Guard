@@ -192,10 +192,11 @@ func checkDetectionSourceMerge() {
     let ocrBox = PIIBox(kind: .email, matched: "jane@example.com", confidence: 0.6, normalizedRect: rect, detectedAt: now, source: .ocr)
     let axBox = PIIBox(kind: .email, matched: "jane@example.com", confidence: 1.0, normalizedRect: rect.insetBy(dx: 0.01, dy: 0.005), detectedAt: now, source: .accessibility)
 
-    // Same PII, same place: accessibility bounds win, OCR duplicate dropped.
+    // Same PII, same place: both sources are kept so a stale/mispositioned AX
+    // rect can never suppress a correctly-placed OCR mask.
     let merged = FrameProcessor.merge(ocr: [ocrBox], accessibility: [axBox])
-    check(merged.count == 1, "expected duplicate merged, got \(merged.count)")
-    check(merged.first?.source == .accessibility, "expected accessibility box preferred")
+    check(merged.count == 2, "expected additive source merge, got \(merged.count)")
+    check(merged.map(\.source) == [.accessibility, .ocr], "expected accessibility and OCR boxes preserved")
 
     // Same PII, different place (two occurrences on screen): both kept.
     let elsewhere = PIIBox(kind: .email, matched: "jane@example.com", confidence: 1.0, normalizedRect: CGRect(x: 0.7, y: 0.8, width: 0.2, height: 0.05), detectedAt: now, source: .accessibility)

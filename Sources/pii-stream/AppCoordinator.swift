@@ -4,7 +4,7 @@ import CoreMedia
 import Foundation
 
 public final class AppCoordinator: NSObject, NSApplicationDelegate {
-    let frameStore = FrameStore()
+    let frameStore: FrameStore
     private let captureFrameStore: FrameStore
     let boxStore = BoxStore()
     let options: WatchOptions
@@ -39,11 +39,30 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     public init(options: WatchOptions) {
         self.options = options
-        captureFrameStore = options.remote == nil ? frameStore : FrameStore()
+        let maximumFrameCount = max(
+            2,
+            Int((Double(options.capture.captureFPS) * 0.75).rounded(.up)) + 2
+        )
+        let outputStore = FrameStore(
+            maxSampleAge: Self.frameRetention(for: options.mode),
+            maxSamples: maximumFrameCount
+        )
+        frameStore = outputStore
+        // In remote mode source frames only need to survive the in-flight
+        // request; RemoteFrameClient retains that one sample explicitly.
+        captureFrameStore = options.remote == nil
+            ? outputStore
+            : FrameStore(maxSampleAge: 0, maxSamples: 1)
         guardMode = options.mode
         maskMode = options.maskMode
         processor = FrameProcessor(options: options.processingOptions)
         super.init()
+    }
+
+    private static func frameRetention(for mode: GuardMode) -> TimeInterval {
+        // Keep enough history for delayed rendering and snapshot fallback, but
+        // do not retain three quarters of a second of 4K surfaces in every mode.
+        min(0.75, mode.renderDelay + mode.maxSnapshotAge + 0.05)
     }
 
     // MARK: App lifecycle
@@ -108,6 +127,10 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         let pump = ProtectedFramePump(frameStore: frameStore, boxStore: boxStore, guardMode: guardMode)
         pump.onProtectedFrame = { [weak self] frame in
             self?.handleProtectedFrame(frame)
+        }
+        pump.shouldProduceProtectedFrame = { [weak self] in
+            guard let self else { return false }
+            return self.options.previewPresentation == .window || self.recorder.isRecording
         }
         if options.previewPresentation == .screenOverlay {
             pump.onImmediateFrame = { [weak self] frame in
@@ -422,13 +445,22 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             return
         }
 
+        let now = ProcessInfo.processInfo.systemUptime
         detectionStateLock.lock()
         if detectionInFlight {
             pendingDetectionSample = sample
             detectionStateLock.unlock()
             return
         }
+        // Reserve the cadence slot before dispatching. Previously every capture
+        // frame queued a detection task and most of those tasks immediately did
+        // nothing (60 queue hops/sec for a 5–15 Hz detector).
+        guard shouldStartDetectionNow(at: now) else {
+            detectionStateLock.unlock()
+            return
+        }
         detectionInFlight = true
+        lastDetectionTime = now
         detectionStateLock.unlock()
 
         detectionQueue.async { [weak self] in
@@ -436,15 +468,21 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             var sampleToProcess: FrameSample? = sample
             while let current = sampleToProcess {
                 let age = ProcessInfo.processInfo.systemUptime - current.capturedAt
-                if age <= self.guardMode.maxDetectionInputAge, self.shouldStartDetectionNow() {
-                    self.lastDetectionTime = ProcessInfo.processInfo.systemUptime
+                if age <= self.guardMode.maxDetectionInputAge {
                     self.detect(sample: current)
                 }
 
                 self.detectionStateLock.lock()
-                sampleToProcess = self.pendingDetectionSample
+                let pending = self.pendingDetectionSample
                 self.pendingDetectionSample = nil
-                if sampleToProcess == nil {
+                let now = ProcessInfo.processInfo.systemUptime
+                if let pending,
+                   now - pending.capturedAt <= self.guardMode.maxDetectionInputAge,
+                   self.shouldStartDetectionNow(at: now) {
+                    self.lastDetectionTime = now
+                    sampleToProcess = pending
+                } else {
+                    sampleToProcess = nil
                     self.detectionInFlight = false
                 }
                 self.detectionStateLock.unlock()
@@ -470,11 +508,13 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         remoteClient?.send(sample: sample)
     }
 
-    private func shouldStartDetectionNow() -> Bool {
+    private func shouldStartDetectionNow(
+        at now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Bool {
         let detectionFPS = options.fps ?? guardMode.detectionFPS
         guard detectionFPS > 0 else { return true }
         let interval = 1.0 / detectionFPS
-        return ProcessInfo.processInfo.systemUptime - lastDetectionTime >= interval
+        return now - lastDetectionTime >= interval
     }
 
     private func detect(sample: FrameSample) {
@@ -486,6 +526,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func setMode(_ mode: GuardMode) {
         guardMode = mode
+        frameStore.setMaxSampleAge(Self.frameRetention(for: mode))
         pump?.guardMode = mode
         detectionQueue.async { [weak self] in
             guard let self else { return }
@@ -493,8 +534,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             updated.mode = mode
             self.processor.updateOptions(updated)
             self.remoteClient?.updateConfig(updated)
-            self.lastDetectionTime = 0
             self.detectionStateLock.lock()
+            self.lastDetectionTime = 0
             self.detectionInFlight = false
             self.pendingDetectionSample = nil
             self.detectionStateLock.unlock()

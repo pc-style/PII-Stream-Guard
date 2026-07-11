@@ -79,9 +79,26 @@ final class BoxStore {
 final class FrameStore {
     private let lock = NSLock()
     private var samples: [FrameSample] = []
-    private let maxSampleAge: TimeInterval = 0.75
-    private let maxSamples = 60
+    private var maxSampleAge: TimeInterval
+    private let maxSamples: Int
     private var nextFrameID: UInt64 = 1
+
+    init(maxSampleAge: TimeInterval = 0.75, maxSamples: Int = 60) {
+        self.maxSampleAge = max(0, maxSampleAge)
+        self.maxSamples = max(1, maxSamples)
+    }
+
+    func setMaxSampleAge(_ maxSampleAge: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.maxSampleAge = max(0, maxSampleAge)
+        guard let newest = samples.last else { return }
+        let cutoff = newest.capturedAt - self.maxSampleAge
+        let expiredCount = samples.prefix { $0.capturedAt < cutoff }.count
+        if expiredCount > 0 {
+            samples.removeFirst(expiredCount)
+        }
+    }
 
     @discardableResult
     func update(_ buffer: CVPixelBuffer) -> FrameSample {

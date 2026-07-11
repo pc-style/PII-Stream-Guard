@@ -124,23 +124,26 @@ final class BoxStabilizer {
     }
 
     private func bestMovingIdentityMatch(for box: PIIBox, usedTrackIDs: Set<UInt64>) -> Int? {
-        let candidates = tracks.indices.filter { idx in
-            let track = tracks[idx]
-            return !usedTrackIDs.contains(track.id)
-                && track.identityKey == box.identityKey
-                && centerDistance(track.box.normalizedRect, box.normalizedRect) <= maxIdentityCenterDistance
-        }
+        let maximumDistanceSquared = maxIdentityCenterDistance * maxIdentityCenterDistance
+        var bestIndex: Int?
+        var bestDistanceSquared = maximumDistanceSquared
 
-        guard !candidates.isEmpty else { return nil }
-        return candidates.min { lhs, rhs in
-            centerDistance(tracks[lhs].box.normalizedRect, box.normalizedRect)
-                < centerDistance(tracks[rhs].box.normalizedRect, box.normalizedRect)
+        for idx in tracks.indices {
+            let track = tracks[idx]
+            guard !usedTrackIDs.contains(track.id), track.identityKey == box.identityKey else { continue }
+            let distanceSquared = centerDistanceSquared(track.box.normalizedRect, box.normalizedRect)
+            guard distanceSquared <= maximumDistanceSquared,
+                  bestIndex == nil || distanceSquared < bestDistanceSquared else { continue }
+            bestDistanceSquared = distanceSquared
+            bestIndex = idx
         }
+        return bestIndex
     }
 
     private func smoothedBox(previous: PIIBox, current: PIIBox) -> PIIBox {
         if iou(previous.normalizedRect, current.normalizedRect) < identityIoUThreshold,
-           centerDistance(previous.normalizedRect, current.normalizedRect) > snapCenterDistance {
+           centerDistanceSquared(previous.normalizedRect, current.normalizedRect)
+               > snapCenterDistance * snapCenterDistance {
             return paddedBox(current)
         }
 
@@ -186,10 +189,10 @@ final class BoxStabilizer {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
-    private func centerDistance(_ a: CGRect, _ b: CGRect) -> CGFloat {
+    private func centerDistanceSquared(_ a: CGRect, _ b: CGRect) -> CGFloat {
         let dx = a.midX - b.midX
         let dy = a.midY - b.midY
-        return sqrt(dx * dx + dy * dy)
+        return dx * dx + dy * dy
     }
 
     private func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {

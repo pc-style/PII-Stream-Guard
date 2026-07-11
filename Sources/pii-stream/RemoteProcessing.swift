@@ -104,7 +104,12 @@ private final class ProcessingServerSession {
                 frameSize: CGSize(width: frame.width, height: frame.height)
             )
             guard let processed = processor.process(sample: sample) else { return }
-            let protectedData = try FrameCodec.protectedJPEGData(from: buffer, snapshot: processed.snapshot)
+            // Metadata-only peers retain their local capture frame, so sending a
+            // second protected JPEG wastes server render time, bandwidth, base64
+            // memory, and client decode time. Older peers still receive pixels.
+            let protectedData = envelope.acceptsMetadataOnly == true
+                ? nil
+                : try FrameCodec.protectedJPEGData(from: buffer, snapshot: processed.snapshot)
             try send(RemoteResponse(
                 frameID: processed.snapshot.frameID,
                 capturedAt: processed.snapshot.capturedAt,
@@ -113,7 +118,7 @@ private final class ProcessingServerSession {
                 armed: processed.snapshot.armed,
                 blackoutWholeFrame: processed.snapshot.blackoutWholeFrame,
                 detections: processed.snapshot.boxes.map(RemoteDetection.init(box:)),
-                imageBase64: protectedData.base64EncodedString(),
+                imageBase64: protectedData?.base64EncodedString(),
                 error: nil
             ))
         } catch {
@@ -149,6 +154,7 @@ final class RemoteFrameClient {
     private let onResponse: (RemoteProcessedFrame) -> Void
     private let onDisconnect: () -> Void
     private var newestResponseID: UInt64 = 0
+    private var pendingSamples: [UInt64: FrameSample] = [:]
 
     init(
         hostPort: String,
@@ -207,7 +213,16 @@ final class RemoteFrameClient {
             do {
                 let frame: RemoteFrame?
                 if let sample {
-                    let imageData = try FrameCodec.jpegData(from: sample.pixelBuffer)
+                    self.pendingSamples[sample.id] = sample
+                    let detectorSettings = config.settingsOverride ?? config.mode.detectorSettings
+                    // The server immediately downsizes for OCR. Encode at that
+                    // size up front instead of shipping native/4K pixels that it
+                    // will discard; normalized detection coordinates still map
+                    // to the retained full-resolution local frame.
+                    let imageData = try FrameCodec.jpegData(
+                        from: sample.pixelBuffer,
+                        maxPixelSize: detectorSettings.maxPixelSize
+                    )
                     frame = RemoteFrame(
                         id: sample.id,
                         capturedAt: sample.capturedAt,
@@ -218,7 +233,12 @@ final class RemoteFrameClient {
                 } else {
                     frame = nil
                 }
-                let envelope = RemoteEnvelope(token: self.token, config: config, frame: frame)
+                let envelope = RemoteEnvelope(
+                    token: self.token,
+                    config: config,
+                    frame: frame,
+                    acceptsMetadataOnly: true
+                )
                 let data = try JSONEncoder().encode(envelope)
                 let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
                 let context = NWConnection.ContentContext(identifier: "frame", metadata: [metadata])
@@ -228,6 +248,9 @@ final class RemoteFrameClient {
                     }
                 })
             } catch {
+                if let sample {
+                    self.pendingSamples[sample.id] = nil
+                }
                 self.onDisconnect()
             }
         }
@@ -240,13 +263,33 @@ final class RemoteFrameClient {
                 self.onDisconnect()
                 return
             }
-            if let data,
-               let response = try? JSONDecoder().decode(RemoteResponse.self, from: data),
-               response.error == nil,
-               response.frameID > self.newestResponseID,
-               let encoded = response.imageBase64,
-               let imageData = Data(base64Encoded: encoded),
-               let buffer = try? FrameCodec.pixelBuffer(from: imageData) {
+            guard let data,
+                  let response = try? JSONDecoder().decode(RemoteResponse.self, from: data) else {
+                self.receive()
+                return
+            }
+            guard response.error == nil else {
+                self.onDisconnect()
+                return
+            }
+            guard response.frameID > self.newestResponseID else {
+                self.receive()
+                return
+            }
+
+            let localSample = self.pendingSamples.removeValue(forKey: response.frameID)
+            self.pendingSamples = self.pendingSamples.filter { $0.key > response.frameID }
+            let buffer: CVPixelBuffer?
+            if let localSample {
+                buffer = localSample.pixelBuffer
+            } else if let encoded = response.imageBase64,
+                      let imageData = Data(base64Encoded: encoded) {
+                buffer = try? FrameCodec.pixelBuffer(from: imageData)
+            } else {
+                buffer = nil
+            }
+
+            if let buffer {
                 self.newestResponseID = response.frameID
                 let snapshot = DetectionSnapshot(
                     frameID: response.frameID,
@@ -258,10 +301,9 @@ final class RemoteFrameClient {
                     blackoutWholeFrame: response.blackoutWholeFrame
                 )
                 self.onResponse(RemoteProcessedFrame(buffer: buffer, snapshot: snapshot))
-            } else if let data,
-                      let response = try? JSONDecoder().decode(RemoteResponse.self, from: data),
-                      response.error != nil {
+            } else {
                 self.onDisconnect()
+                return
             }
             self.receive()
         }

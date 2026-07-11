@@ -24,6 +24,9 @@ final class ProtectedFramePump {
     /// Zero-delay frame for the on-screen overlay presentation (boxes over the
     /// live screen; never blacks out the whole display).
     var onImmediateFrame: ((ProtectedFrame) -> Void)?
+    /// Lets an attached but currently idle sink (for example, a stopped
+    /// recorder) suppress store scans without rebuilding the pump.
+    var shouldProduceProtectedFrame: (() -> Bool)?
 
     init(frameStore: FrameStore, boxStore: BoxStore, guardMode: GuardMode) {
         self.frameStore = frameStore
@@ -47,7 +50,7 @@ final class ProtectedFramePump {
 
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
-        if let onProtectedFrame {
+        if let onProtectedFrame, shouldProduceProtectedFrame?() != false {
             if let frame = resolveFrame(at: now - guardMode.renderDelay, failClosedBlackout: true) {
                 onProtectedFrame(frame)
             }

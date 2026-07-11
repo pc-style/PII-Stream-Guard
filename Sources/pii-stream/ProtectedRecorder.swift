@@ -73,6 +73,7 @@ final class ProtectedRecorder {
     private var audioInput: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var metadataHandle: FileHandle?
+    private var metadataBuffer = Data()
     private var options = RecordingOptions()
 
     private var sessionStart: TimeInterval?
@@ -98,6 +99,8 @@ final class ProtectedRecorder {
     }
 
     private static let timescale: CMTimeScale = 60_000
+    private static let metadataFlushThreshold = 32 * 1024
+    private static let colorSpace = CGColorSpaceCreateDeviceRGB()
 
     // MARK: Lifecycle
 
@@ -123,6 +126,7 @@ final class ProtectedRecorder {
         let metadataURL = url.deletingPathExtension().appendingPathExtension("jsonl")
         FileManager.default.createFile(atPath: metadataURL.path, contents: nil)
         metadataHandle = try FileHandle(forWritingTo: metadataURL)
+        metadataBuffer.removeAll(keepingCapacity: true)
         outputURL = url
         self.metadataURL = metadataURL
         sessionStart = nil
@@ -153,6 +157,7 @@ final class ProtectedRecorder {
 
     func stop() {
         guard isRecording else { return }
+        flushMetadata()
         metadataHandle?.closeFile()
         metadataHandle = nil
 
@@ -414,24 +419,31 @@ final class ProtectedRecorder {
         guardMode: GuardMode,
         blackoutWholeFrame: Bool
     ) {
-        let image = CIImage(cvPixelBuffer: source)
-        ciContext.render(image, to: output)
+        let width = CVPixelBufferGetWidth(output)
+        let height = CVPixelBufferGetHeight(output)
+
+        // A full blackout does not need the source frame at all. Avoid a
+        // full-resolution Core Image render only to paint over every pixel.
+        if !blackoutWholeFrame {
+            let image = CIImage(cvPixelBuffer: source)
+            ciContext.render(image, to: output)
+            // Most frames contain no masks; keep that path GPU-only and avoid a
+            // pixel-buffer lock plus CGContext allocation.
+            guard !boxes.isEmpty else { return }
+        }
 
         CVPixelBufferLockBaseAddress(output, [])
         defer { CVPixelBufferUnlockBaseAddress(output, []) }
         guard let baseAddress = CVPixelBufferGetBaseAddress(output) else { return }
 
-        let width = CVPixelBufferGetWidth(output)
-        let height = CVPixelBufferGetHeight(output)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(output)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
             data: baseAddress,
             width: width,
             height: height,
             bitsPerComponent: 8,
             bytesPerRow: bytesPerRow,
-            space: colorSpace,
+            space: Self.colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return }
 
@@ -490,8 +502,17 @@ final class ProtectedRecorder {
             payload["accessibilityAgeMs"] = (axAge * 1000).rounded()
         }
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
-        metadataHandle?.write(data)
-        metadataHandle?.write(Data("\n".utf8))
+        metadataBuffer.append(data)
+        metadataBuffer.append(0x0A)
+        if metadataBuffer.count >= Self.metadataFlushThreshold {
+            flushMetadata()
+        }
+    }
+
+    private func flushMetadata() {
+        guard !metadataBuffer.isEmpty else { return }
+        metadataHandle?.write(metadataBuffer)
+        metadataBuffer.removeAll(keepingCapacity: true)
     }
 
     private func clear() {
@@ -501,6 +522,7 @@ final class ProtectedRecorder {
         adaptor = nil
         outputURL = nil
         metadataURL = nil
+        metadataBuffer.removeAll(keepingCapacity: true)
         sessionStart = nil
         lastAppendedPTS = -.greatestFiniteMagnitude
         lastAudioPTS = -.greatestFiniteMagnitude

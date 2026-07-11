@@ -62,15 +62,15 @@ public struct PIIClassifier {
     public let checkPhone: Bool
 
     private let normalizedNeedles: [String]
-    private let compactEmailRegex = try! NSRegularExpression(
+    private static let compactEmailRegex = try! NSRegularExpression(
         pattern: "\\b[A-Z0-9._%+-]+@(?:[A-Z0-9-]+\\.)+[A-Z]{2,}\\b",
         options: [.caseInsensitive]
     )
-    private let spacedEmailRegex = try! NSRegularExpression(
+    private static let spacedEmailRegex = try! NSRegularExpression(
         pattern: "\\b[A-Z0-9._%+-]+\\s*@\\s*(?:[A-Z0-9-]+\\s*\\.\\s*)+[A-Z]{2,}\\b",
         options: [.caseInsensitive]
     )
-    private let phoneRegex = try! NSRegularExpression(
+    private static let phoneRegex = try! NSRegularExpression(
         pattern: "(?<![A-Z0-9])(?:\\+\\s*\\d{1,3}[\\s.-]*)?(?:\\(\\s*\\d{3}\\s*\\)|\\d{3})[\\s.-]*\\d{3}[\\s.-]*\\d{4}(?![A-Z0-9])",
         options: [.caseInsensitive]
     )
@@ -122,7 +122,7 @@ public struct PIIClassifier {
     private func collectEmailBoxes(from fragment: RecognizedTextFragment, into boxes: inout [PIIBox]) {
         let raw = fragment.raw
         let nsRange = NSRange(raw.startIndex..., in: raw)
-        for match in spacedEmailRegex.matches(in: raw, range: nsRange) {
+        for match in Self.spacedEmailRegex.matches(in: raw, range: nsRange) {
             guard let range = Range(match.range, in: raw) else { continue }
             let matched = String(raw[range]).filter { !$0.isWhitespace }.lowercased()
             appendBox(kind: .email, matched: matched, range: range, fragment: fragment, into: &boxes)
@@ -165,7 +165,7 @@ public struct PIIClassifier {
 
     private func isWholeEmail(_ value: String) -> Bool {
         let nsRange = NSRange(value.startIndex..., in: value)
-        guard let match = compactEmailRegex.firstMatch(in: value, range: nsRange) else { return false }
+        guard let match = Self.compactEmailRegex.firstMatch(in: value, range: nsRange) else { return false }
         return match.range.location == 0 && match.range.length == nsRange.length
     }
 
@@ -184,7 +184,7 @@ public struct PIIClassifier {
     private func collectPhoneBoxes(from fragment: RecognizedTextFragment, into boxes: inout [PIIBox]) {
         let raw = fragment.raw
         let nsRange = NSRange(raw.startIndex..., in: raw)
-        for match in phoneRegex.matches(in: raw, range: nsRange) {
+        for match in Self.phoneRegex.matches(in: raw, range: nsRange) {
             guard let range = Range(match.range, in: raw),
                   let matched = normalizedPhoneMatch(String(raw[range])) else {
                 continue

@@ -143,16 +143,23 @@ public struct FrameMasker {
             return
         }
 
-        for rect in protectedRects(for: boxes, frameSize: frameSize, maskMode: maskMode, guardMode: guardMode) {
-            let drawRect = rectMapping.map(rect, frameHeight: frameSize.height)
-            switch maskMode {
-            case .blackout:
-                context.setFillColor(CGColor(gray: 0, alpha: 1))
-                context.fill(drawRect)
-            case .boundingBox:
-                context.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
-                context.setLineWidth(4)
-                context.stroke(drawRect)
+        let rects = protectedRects(
+            for: boxes,
+            frameSize: frameSize,
+            maskMode: maskMode,
+            guardMode: guardMode
+        )
+        switch maskMode {
+        case .blackout:
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
+            for rect in rects {
+                context.fill(rectMapping.map(rect, frameHeight: frameSize.height))
+            }
+        case .boundingBox:
+            context.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+            context.setLineWidth(4)
+            for rect in rects {
+                context.stroke(rectMapping.map(rect, frameHeight: frameSize.height))
             }
         }
     }

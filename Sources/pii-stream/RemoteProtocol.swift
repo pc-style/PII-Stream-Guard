@@ -6,6 +6,9 @@ struct RemoteEnvelope: Codable {
     var token: String
     var config: FrameProcessingOptions?
     var frame: RemoteFrame?
+    /// New clients can mask the retained local capture frame themselves and do
+    /// not need the server to JPEG-encode and echo the pixels back.
+    var acceptsMetadataOnly: Bool?
 }
 
 struct RemoteFrame: Codable {

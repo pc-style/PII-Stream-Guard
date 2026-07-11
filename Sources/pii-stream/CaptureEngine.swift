@@ -258,11 +258,10 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
             droppedFrameCount += 1
             return
         }
-        guard let copy = PixelBufferUtils.copy(buffer) else {
-            droppedFrameCount += 1
-            return
-        }
-        let sample = frameStore.update(copy)
+        // CVPixelBuffer is reference-counted. Retaining it in FrameStore keeps the
+        // ScreenCaptureKit surface alive, so copying every pixel of every frame is
+        // unnecessary (and particularly costly for 4K/60 capture).
+        let sample = frameStore.update(buffer)
         onFrame?(sample)
     }
 
