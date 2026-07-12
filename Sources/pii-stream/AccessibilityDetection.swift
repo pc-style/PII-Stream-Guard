@@ -30,6 +30,12 @@ final class AccessibilityTextScanner {
         self.classifier = classifier
     }
 
+    struct ScanResult {
+        let boxes: [PIIBox]
+        let visitedElements: Int
+        let exhaustedBudget: Bool
+    }
+
     static var isTrusted: Bool {
         AXIsProcessTrusted()
     }
@@ -96,6 +102,46 @@ final class AccessibilityTextScanner {
                 source: .accessibility
             )
         }
+    }
+
+    /// Extracts one event element, application, or window on the caller's AX
+    /// worker. The element never leaves that worker, and both the wall-clock
+    /// and element counts are bounded.
+    func scan(
+        root: AXUIElement,
+        geometry: CaptureGeometry,
+        maxDuration: TimeInterval = 0.10,
+        maxElements: Int? = nil
+    ) -> ScanResult {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let deadline = startedAt + min(max(0.01, maxDuration), maxScanDuration)
+        let initialBudget = min(max(1, maxElements ?? self.maxElements), self.maxElements)
+        var budget = initialBudget
+        var fragments: [RecognizedTextFragment] = []
+        walk(
+            element: root,
+            depth: 0,
+            geometry: geometry,
+            deadline: deadline,
+            budget: &budget,
+            fragments: &fragments
+        )
+        let finishedAt = ProcessInfo.processInfo.systemUptime
+        let boxes = classifier.classify(fragments).map { box in
+            PIIBox(
+                kind: box.kind,
+                matched: box.matched,
+                confidence: box.confidence,
+                normalizedRect: box.normalizedRect,
+                detectedAt: box.detectedAt,
+                source: .accessibility
+            )
+        }
+        return ScanResult(
+            boxes: boxes,
+            visitedElements: initialBudget - budget,
+            exhaustedBudget: budget == 0 || finishedAt >= deadline
+        )
     }
 
     // MARK: Candidate discovery
