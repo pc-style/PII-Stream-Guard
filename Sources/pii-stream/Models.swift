@@ -2,7 +2,7 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 
-public enum PIIKind: String, Codable {
+public enum PIIKind: String, Codable, Sendable {
     case email
     case phone
     case needle
@@ -10,12 +10,12 @@ public enum PIIKind: String, Codable {
 
 /// Which subsystem produced a detection. OCR boxes come from Vision on
 /// sampled frames; accessibility boxes come from the AX tree of visible apps.
-public enum PIIDetectionSource: String, Codable {
+public enum PIIDetectionSource: String, Codable, Hashable, Sendable {
     case ocr
     case accessibility
 }
 
-public struct PIIBox: Codable {
+public struct PIIBox: Codable, Sendable {
     public let kind: PIIKind
     public let matched: String
     public let confidence: Float

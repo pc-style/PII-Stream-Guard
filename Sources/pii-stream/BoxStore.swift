@@ -138,6 +138,12 @@ final class FrameStore {
         return samples.last
     }
 
+    func oldestCapturedAt() -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples.first?.capturedAt
+    }
+
     func sample(atOrBefore capturedAt: TimeInterval) -> FrameSample? {
         lock.lock()
         defer { lock.unlock() }

@@ -7,6 +7,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     let frameStore: FrameStore
     private let captureFrameStore: FrameStore
     let boxStore = BoxStore()
+    private let decisionStore: DecisionTimelineStore
+    private let detectionCoordinator: DetectionCoordinator
     let options: WatchOptions
 
     private var capture: CaptureEngine?
@@ -39,6 +41,9 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     public init(options: WatchOptions) {
         self.options = options
+        let decisionStore = DecisionTimelineStore(requiredSources: [.ocr])
+        self.decisionStore = decisionStore
+        detectionCoordinator = DetectionCoordinator(timeline: decisionStore)
         let maximumFrameCount = max(
             2,
             Int((Double(options.capture.captureFPS) * 0.75).rounded(.up)) + 2
@@ -124,7 +129,12 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             }
         }
 
-        let pump = ProtectedFramePump(frameStore: frameStore, boxStore: boxStore, guardMode: guardMode)
+        let pump = ProtectedFramePump(
+            frameStore: frameStore,
+            boxStore: boxStore,
+            decisionStore: decisionStore,
+            guardMode: guardMode
+        )
         pump.onProtectedFrame = { [weak self] frame in
             self?.handleProtectedFrame(frame)
         }
@@ -414,6 +424,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         guard !axInFlight, let geometry = capture?.geometry, let axScanner else { return }
         axInFlight = true
         defer { axInFlight = false }
+        let scanStartedAt = ProcessInfo.processInfo.systemUptime
 
         var windowTarget: CGWindowID?
         if case .window(let id) = options.capture.target {
@@ -433,7 +444,15 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         }
         let scannedAt = ProcessInfo.processInfo.systemUptime
         detectionQueue.async { [weak self] in
-            self?.processor.updateAccessibilityBoxes(boxes, at: scannedAt)
+            guard let self else { return }
+            self.processor.updateAccessibilityBoxes(boxes, at: scannedAt)
+            self.detectionCoordinator.ingest(DetectionBatch(
+                source: .accessibility,
+                observedAt: scannedAt,
+                effectiveFrom: scanStartedAt,
+                coverage: .verified,
+                findings: boxes
+            ))
         }
     }
 
@@ -519,6 +538,13 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func detect(sample: FrameSample) {
         guard let processed = processor.process(sample: sample) else { return }
+        detectionCoordinator.ingest(DetectionBatch(
+            source: .ocr,
+            observedAt: processed.processedAt,
+            effectiveFrom: sample.capturedAt,
+            coverage: .verified,
+            findings: processed.detectedBoxes.filter { $0.source == .ocr }
+        ))
         latestFreshness = processed.snapshot.freshness
         boxStore.update(processed.snapshot)
         logDetections(processed.detectedBoxes, snapshot: processed.snapshot)
@@ -557,6 +583,13 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             blackoutWholeFrame: processed.snapshot.blackoutWholeFrame
         )
         boxStore.update(snapshot)
+        detectionCoordinator.ingest(DetectionBatch(
+            source: .ocr,
+            observedAt: ProcessInfo.processInfo.systemUptime,
+            effectiveFrom: sample.capturedAt,
+            coverage: .verified,
+            findings: snapshot.boxes
+        ))
         logDetections(snapshot.boxes, snapshot: snapshot)
         completeRemoteDetection()
     }
@@ -578,15 +611,24 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     private func failClosed() {
+        let now = ProcessInfo.processInfo.systemUptime
         boxStore.update(DetectionSnapshot(
             frameID: 0,
             boxes: [],
             frameSize: .zero,
-            capturedAt: ProcessInfo.processInfo.systemUptime,
+            capturedAt: now,
             guardMode: guardMode,
             armed: true,
             blackoutWholeFrame: true
         ))
+        let unavailableDecision = detectionCoordinator.ingest(DetectionBatch(
+            source: .ocr,
+            observedAt: now,
+            effectiveFrom: frameStore.oldestCapturedAt() ?? now,
+            coverage: .unavailable(reason: "remote processor disconnected"),
+            findings: []
+        ))
+        decisionStore.replaceSourceHistory(with: unavailableDecision)
     }
 
     private func logDetections(_ boxes: [PIIBox], snapshot: DetectionSnapshot) {

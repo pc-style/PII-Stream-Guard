@@ -231,6 +231,135 @@ func checkPIIBoxSourceCoding() {
     check(roundTripped.source == .accessibility, "expected source to survive round trip")
 }
 
+func checkDecisionTimeline() {
+    let store = DecisionTimelineStore(requiredSources: [.accessibility])
+    let coordinator = DetectionCoordinator(timeline: store, clearBatchThreshold: 2)
+    let finding = PIIBox(
+        kind: .email,
+        matched: "synthetic@example.com",
+        confidence: 1,
+        normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.1),
+        detectedAt: 11,
+        source: .accessibility
+    )
+
+    coordinator.ingest(DetectionBatch(
+        source: .accessibility,
+        observedAt: 12,
+        effectiveFrom: 10,
+        coverage: .verified,
+        findings: [finding]
+    ))
+    check(store.decision(at: 10.5, maxAge: 5)?.action == .blackout(.finding), "expected retroactive AX blackout")
+    check(store.decision(at: 9.9, maxAge: 5)?.action == .blackout(.incompleteCoverage), "expected a gap to fail closed")
+    check(store.decision(at: 16, maxAge: 5)?.action == .blackout(.incompleteCoverage), "expected stale coverage to fail closed")
+
+    let firstClear = coordinator.ingest(DetectionBatch(
+        source: .accessibility,
+        observedAt: 13,
+        effectiveFrom: 13,
+        coverage: .verified,
+        findings: []
+    ))
+    check(firstClear.action == .blackout(.clearHysteresis), "expected first clear batch to keep blackout")
+
+    let secondClear = coordinator.ingest(DetectionBatch(
+        source: .accessibility,
+        observedAt: 14,
+        effectiveFrom: 14,
+        coverage: .verified,
+        findings: []
+    ))
+    check(secondClear.action == .clear, "expected consecutive clear batches to release AX blackout")
+    check(store.decision(at: 14.5, maxAge: 5)?.action == .clear, "expected latest clear decision")
+
+    let incomplete = coordinator.ingest(DetectionBatch(
+        source: .accessibility,
+        observedAt: 15,
+        effectiveFrom: 15,
+        coverage: .partial(reason: "synthetic timeout"),
+        findings: []
+    ))
+    check(incomplete.action == .blackout(.incompleteCoverage), "expected incomplete coverage to fail closed")
+
+    let hybridStore = DecisionTimelineStore(requiredSources: [.ocr, .accessibility])
+    let hybridCoordinator = DetectionCoordinator(timeline: hybridStore, clearBatchThreshold: 1)
+    hybridCoordinator.ingest(DetectionBatch(
+        source: .ocr,
+        observedAt: 20,
+        effectiveFrom: 20,
+        coverage: .verified,
+        findings: []
+    ))
+    check(
+        hybridStore.decision(at: 20.1, maxAge: 1)?.action == .blackout(.incompleteCoverage),
+        "expected a missing required source to block clear output"
+    )
+    hybridCoordinator.ingest(DetectionBatch(
+        source: .accessibility,
+        observedAt: 20,
+        effectiveFrom: 20,
+        coverage: .verified,
+        findings: []
+    ))
+    check(hybridStore.decision(at: 20.1, maxAge: 1)?.action == .clear, "expected all required sources to permit clear output")
+
+    let remoteStore = DecisionTimelineStore(requiredSources: [.ocr])
+    let remoteCoordinator = DetectionCoordinator(timeline: remoteStore, clearBatchThreshold: 1)
+    remoteCoordinator.ingest(DetectionBatch(
+        source: .ocr,
+        observedAt: 31,
+        effectiveFrom: 31,
+        coverage: .verified,
+        findings: []
+    ))
+    let disconnect = remoteCoordinator.ingest(DetectionBatch(
+        source: .ocr,
+        observedAt: 32,
+        effectiveFrom: 30,
+        coverage: .unavailable(reason: "synthetic disconnect"),
+        findings: []
+    ))
+    remoteStore.replaceSourceHistory(with: disconnect)
+    check(
+        remoteStore.decision(at: 31.5, maxAge: 5)?.action == .blackout(.incompleteCoverage),
+        "expected disconnect to invalidate retained source history"
+    )
+}
+
+func checkProtectedDecisionApplication() {
+    let emptySnapshot = DetectionSnapshot(
+        frameID: 1,
+        boxes: [],
+        frameSize: CGSize(width: 100, height: 100),
+        capturedAt: 1,
+        guardMode: .standard,
+        armed: false,
+        blackoutWholeFrame: false
+    )
+    let maskDecision = ProtectionDecision(
+        effectiveFrom: 1,
+        effectiveUntil: nil,
+        action: .mask([CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2)]),
+        sources: [.ocr],
+        coverage: .verified,
+        createdAt: 1
+    )
+    let protected = ProtectedFramePump.applying(
+        maskDecision,
+        to: emptySnapshot,
+        failClosedBlackout: true
+    )
+    check(protected.blackoutWholeFrame, "expected mask without snapshot geometry to fail closed")
+
+    let overlay = ProtectedFramePump.applying(
+        maskDecision,
+        to: emptySnapshot,
+        failClosedBlackout: false
+    )
+    check(!overlay.blackoutWholeFrame, "expected local overlay path to remain non-blocking")
+}
+
 checkClassifier()
 checkFrameMasker()
 checkProtectedRenderingRecipes()
@@ -239,4 +368,6 @@ checkCaptureSizing()
 checkAccessibilityCoordinateConversion()
 checkDetectionSourceMerge()
 checkPIIBoxSourceCoding()
+checkDecisionTimeline()
+checkProtectedDecisionApplication()
 print("pii-stream checks passed")
