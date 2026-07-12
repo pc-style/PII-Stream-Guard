@@ -19,10 +19,13 @@ struct AXEventBurst: Sendable {
     private(set) var lastReceivedAt: TimeInterval?
     private(set) var eventCount = 0
 
-    mutating func receive(at timestamp: TimeInterval) {
-        if firstReceivedAt == nil { firstReceivedAt = timestamp }
+    @discardableResult
+    mutating func receive(at timestamp: TimeInterval) -> Bool {
+        let startsBurst = firstReceivedAt == nil
+        if startsBurst { firstReceivedAt = timestamp }
         lastReceivedAt = timestamp
         eventCount += 1
+        return startsBurst
     }
 
     mutating func drain() -> (firstReceivedAt: TimeInterval, eventCount: Int)? {
@@ -30,6 +33,27 @@ struct AXEventBurst: Sendable {
         let result = (firstReceivedAt, eventCount)
         self = AXEventBurst()
         return result
+    }
+}
+
+struct AXObserverRetrySchedule: Sendable {
+    private(set) var deadline: TimeInterval?
+
+    mutating func schedule(at now: TimeInterval, after delay: TimeInterval) -> TimeInterval? {
+        guard deadline == nil else { return nil }
+        let deadline = now + max(0, delay)
+        self.deadline = deadline
+        return deadline
+    }
+
+    mutating func beginScheduledAttempt() -> Bool {
+        guard deadline != nil else { return false }
+        deadline = nil
+        return true
+    }
+
+    mutating func cancel() {
+        deadline = nil
     }
 }
 
@@ -148,6 +172,8 @@ final class AccessibilityObserverSession: @unchecked Sendable {
     private var coalescingStartedAt: TimeInterval?
     private var coalescingTimer: CFRunLoopTimer?
     private var reconciliationTimer: CFRunLoopTimer?
+    private var observerRecoveryTimer: CFRunLoopTimer?
+    private var observerRetrySchedule = AXObserverRetrySchedule()
     private var geometry: CaptureGeometry
     private var breaker = AXCircuitBreaker()
     private var latestBoxes: [PIIBox] = []
@@ -203,12 +229,14 @@ final class AccessibilityObserverSession: @unchecked Sendable {
 
     fileprivate func receiveNotification(element: AXUIElement) {
         let now = ProcessInfo.processInfo.systemUptime
-        if eventBurst.firstReceivedAt == nil {
+        let startsBurst = eventBurst.receive(at: now)
+        if startsBurst {
             coalescingStartedAt = now
         }
-        eventBurst.receive(at: now)
         pendingElement = element
-        scheduleCoalescedExtraction()
+        if startsBurst {
+            scheduleCoalescedExtraction()
+        }
     }
 
     private func runWorker() {
@@ -224,25 +252,49 @@ final class AccessibilityObserverSession: @unchecked Sendable {
             applicationElement = application
             AXUIElementSetMessagingTimeout(application, configuration.messagingTimeout)
 
-            var createdObserver: AXObserver?
-            let createError = AXObserverCreate(pid, observerCallback, &createdObserver)
-            guard createError == .success, let createdObserver else {
-                publishUnavailable(trigger: .circuitOpen, reason: "observer creation failed: \(createError.rawValue)")
-                return
-            }
-            observer = createdObserver
-            CFRunLoopAddSource(runLoop, AXObserverGetRunLoopSource(createdObserver), .defaultMode)
-            registerNotifications(observer: createdObserver, application: application)
-            guard !registeredNotifications.isEmpty else {
-                publishUnavailable(trigger: .circuitOpen, reason: "no supported AX notifications")
-                tearDownWorker()
-                return
-            }
-
-            scheduleReconciliationTimer(on: runLoop)
-            extract(trigger: .bootstrap, root: application)
+            startObserver(on: runLoop, application: application)
             CFRunLoopRun()
         }
+    }
+
+    private func startObserver(on runLoop: CFRunLoop, application: AXUIElement) {
+        guard !isSessionStopping, observer == nil else { return }
+
+        var createdObserver: AXObserver?
+        let createError = AXObserverCreate(pid, observerCallback, &createdObserver)
+        guard createError == .success, let createdObserver else {
+            publishUnavailable(trigger: .circuitOpen, reason: "observer creation failed: \(createError.rawValue)")
+            scheduleObserverRecovery(on: runLoop, application: application)
+            return
+        }
+
+        observer = createdObserver
+        CFRunLoopAddSource(runLoop, AXObserverGetRunLoopSource(createdObserver), .defaultMode)
+        registerNotifications(observer: createdObserver, application: application)
+        guard !registeredNotifications.isEmpty else {
+            publishUnavailable(trigger: .circuitOpen, reason: "no supported AX notifications")
+            tearDownWorker()
+            return
+        }
+
+        scheduleReconciliationTimer(on: runLoop)
+        extract(trigger: .bootstrap, root: application)
+    }
+
+    private func scheduleObserverRecovery(on runLoop: CFRunLoop, application: AXUIElement) {
+        guard !isSessionStopping, observer == nil, observerRecoveryTimer == nil else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard let fireAt = observerRetrySchedule.schedule(
+            at: now,
+            after: configuration.circuitRecoveryDelay
+        ) else { return }
+        let timer = CFRunLoopTimerCreateWithHandler(nil, fireAt, 0, 0, 0) { [weak self] _ in
+            guard let self, self.observerRetrySchedule.beginScheduledAttempt() else { return }
+            self.observerRecoveryTimer = nil
+            self.startObserver(on: runLoop, application: application)
+        }
+        observerRecoveryTimer = timer
+        CFRunLoopAddTimer(runLoop, timer, .defaultMode)
     }
 
     private func registerNotifications(observer: AXObserver, application: AXUIElement) {
@@ -267,12 +319,11 @@ final class AccessibilityObserverSession: @unchecked Sendable {
     }
 
     private func scheduleCoalescedExtraction() {
-        if let timer = coalescingTimer {
-            CFRunLoopTimerInvalidate(timer)
-        }
+        guard coalescingTimer == nil else { return }
         let fireAt = CFAbsoluteTimeGetCurrent() + configuration.coalescingDelay
         let timer = CFRunLoopTimerCreateWithHandler(nil, fireAt, 0, 0, 0) { [weak self] _ in
             guard let self else { return }
+            self.coalescingTimer = nil
             let element = self.pendingElement
             self.pendingElement = nil
             self.extract(trigger: .notification, root: element ?? self.applicationElement)
@@ -312,9 +363,16 @@ final class AccessibilityObserverSession: @unchecked Sendable {
             return
         }
 
-        let receivedAt = eventBurst.drain()?.firstReceivedAt
-        let coalescingAt = coalescingStartedAt
-        coalescingStartedAt = nil
+        let receivedAt: TimeInterval?
+        let coalescingAt: TimeInterval?
+        if trigger == .notification {
+            receivedAt = eventBurst.drain()?.firstReceivedAt
+            coalescingAt = coalescingStartedAt
+            coalescingStartedAt = nil
+        } else {
+            receivedAt = nil
+            coalescingAt = nil
+        }
         let extractionStartedAt = ProcessInfo.processInfo.systemUptime
         let isBootstrap = trigger == .bootstrap || trigger == .reconciliation
         let result = scanner.scan(
@@ -442,19 +500,32 @@ final class AccessibilityObserverSession: @unchecked Sendable {
         CFRunLoopWakeUp(runLoop)
     }
 
-    private func tearDownWorker() {
-        coalescingTimer.map(CFRunLoopTimerInvalidate)
-        reconciliationTimer.map(CFRunLoopTimerInvalidate)
-        coalescingTimer = nil
-        reconciliationTimer = nil
+    private var isSessionStopping: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isStopping
+    }
+
+    private func clearObserver(on runLoop: CFRunLoop) {
         if let observer, let applicationElement {
             for notification in registeredNotifications {
                 AXObserverRemoveNotification(observer, applicationElement, notification as CFString)
             }
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            CFRunLoopRemoveSource(runLoop, AXObserverGetRunLoopSource(observer), .defaultMode)
         }
         registeredNotifications.removeAll()
         observer = nil
+    }
+
+    private func tearDownWorker() {
+        coalescingTimer.map(CFRunLoopTimerInvalidate)
+        reconciliationTimer.map(CFRunLoopTimerInvalidate)
+        observerRecoveryTimer.map(CFRunLoopTimerInvalidate)
+        coalescingTimer = nil
+        reconciliationTimer = nil
+        observerRecoveryTimer = nil
+        observerRetrySchedule.cancel()
+        clearObserver(on: CFRunLoopGetCurrent())
         applicationElement = nil
         let now = ProcessInfo.processInfo.systemUptime
         onUpdate(AXSessionUpdate(

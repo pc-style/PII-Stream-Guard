@@ -188,13 +188,25 @@ func checkAccessibilityCoordinateConversion() {
 
 func checkAccessibilityObserverSessionMechanics() {
     var burst = AXEventBurst()
-    burst.receive(at: 10.00)
-    burst.receive(at: 10.01)
-    burst.receive(at: 10.03)
+    check(burst.receive(at: 10.00), "expected the first event to schedule extraction")
+    check(!burst.receive(at: 10.01), "expected later events to retain the first extraction deadline")
+    check(!burst.receive(at: 10.03), "expected a continuous burst not to postpone extraction")
     let drained = burst.drain()
     check(drained?.firstReceivedAt == 10.00, "expected burst to retain the first event timestamp")
     check(drained?.eventCount == 3, "expected burst events to coalesce")
     check(burst.drain() == nil, "expected draining a burst to reset it")
+    check(burst.receive(at: 10.10), "expected a drained burst to schedule a new extraction")
+    _ = burst.drain()
+
+    var retry = AXObserverRetrySchedule()
+    check(retry.schedule(at: 40, after: 2) == 42, "expected observer retry after recovery delay")
+    check(retry.schedule(at: 41, after: 2) == nil, "expected only one pending observer retry")
+    check(retry.beginScheduledAttempt(), "expected the pending retry to begin")
+    check(retry.deadline == nil, "expected retry state cleared before the next observer creation attempt")
+    check(!retry.beginScheduledAttempt(), "expected a consumed retry not to run twice")
+    check(retry.schedule(at: 42, after: 2) == 44, "expected a failed retry to schedule another attempt")
+    retry.cancel()
+    check(retry.deadline == nil, "expected stopping a session to clear retained retry state")
 
     var breaker = AXCircuitBreaker()
     breaker.recordFailure(at: 20, threshold: 3, recoveryDelay: 2)
