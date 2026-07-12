@@ -186,6 +186,48 @@ func checkAccessibilityCoordinateConversion() {
     check(AccessibilityTextScanner.normalizedRect(globalRect: CGRect(x: 5000, y: 5000, width: 10, height: 10), in: capture) == nil, "expected nil for non-intersecting element")
 }
 
+func checkAccessibilityObserverSessionMechanics() {
+    var burst = AXEventBurst()
+    burst.receive(at: 10.00)
+    burst.receive(at: 10.01)
+    burst.receive(at: 10.03)
+    let drained = burst.drain()
+    check(drained?.firstReceivedAt == 10.00, "expected burst to retain the first event timestamp")
+    check(drained?.eventCount == 3, "expected burst events to coalesce")
+    check(burst.drain() == nil, "expected draining a burst to reset it")
+
+    var breaker = AXCircuitBreaker()
+    breaker.recordFailure(at: 20, threshold: 3, recoveryDelay: 2)
+    breaker.recordFailure(at: 20.1, threshold: 3, recoveryDelay: 2)
+    check(breaker.permitsAttempt(at: 20.2), "expected circuit to remain closed below threshold")
+    breaker.recordFailure(at: 20.3, threshold: 3, recoveryDelay: 2)
+    check(!breaker.permitsAttempt(at: 22.2), "expected circuit to block work during cooldown")
+    check(breaker.permitsAttempt(at: 22.3), "expected circuit to allow a bounded recovery attempt")
+    breaker.recordSuccess()
+    check(breaker.consecutiveFailures == 0 && !breaker.isOpen, "expected success to reset circuit state")
+
+    let samples = MonotonicLatencySamples(capacity: 4)
+    samples.record(0.040)
+    samples.record(0.010)
+    samples.record(0.030)
+    samples.record(0.020)
+    samples.record(0.050)
+    check(samples.percentile(0.50) == 0.030, "expected bounded latency sample retention and p50")
+    check(samples.percentile(0.95) == 0.050, "expected monotonic p95 latency")
+
+    let timing = AXSessionTiming(
+        notificationReceivedAt: 30,
+        coalescingStartedAt: 30,
+        extractionStartedAt: 30.04,
+        extractionFinishedAt: 30.06,
+        decisionPublishedAt: 30.07
+    )
+    check(
+        abs((timing.eventToDecisionLatency ?? 0) - 0.07) < 0.000_001,
+        "expected monotonic event-to-decision latency"
+    )
+}
+
 func checkDetectionSourceMerge() {
     let rect = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05)
     let now = 100.0
@@ -366,6 +408,7 @@ checkProtectedRenderingRecipes()
 checkDetectionRecipe()
 checkCaptureSizing()
 checkAccessibilityCoordinateConversion()
+checkAccessibilityObserverSessionMechanics()
 checkDetectionSourceMerge()
 checkPIIBoxSourceCoding()
 checkDecisionTimeline()

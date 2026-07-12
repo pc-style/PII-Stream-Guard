@@ -29,11 +29,9 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     private var remoteInFlight = false
     private var pendingRemoteSample: FrameSample?
 
-    private var axScanner: AccessibilityTextScanner?
-    private var axTimer: DispatchSourceTimer?
-    private let axQueue = DispatchQueue(label: "pii-stream.ax", qos: .utility)
-    private var axInFlight = false
+    private var axRegistry: AccessibilityProcessRegistry?
     private var axWarnedNoTrust = false
+    private let axEventLatencies = MonotonicLatencySamples()
 
     private var durationWorkItem: DispatchWorkItem?
     private var sigintSource: DispatchSourceSignal?
@@ -194,6 +192,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        axRegistry?.stop()
+        axRegistry = nil
         recorder.stop()
     }
 
@@ -349,8 +349,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func shutdown() {
         stopRecording()
-        axTimer?.cancel()
-        axTimer = nil
+        axRegistry?.stop()
+        axRegistry = nil
         pump?.stop()
         emitEvent("stopped", [:])
         let capture = capture
@@ -380,6 +380,15 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         if let axAge = latestFreshness.accessibilityAge(at: now) {
             payload["accessibilityAgeMs"] = (axAge * 1000).rounded()
         }
+        if let p50 = axEventLatencies.percentile(0.50) {
+            payload["axEventToDecisionP50Ms"] = (p50 * 1000).rounded()
+        }
+        if let p95 = axEventLatencies.percentile(0.95) {
+            payload["axEventToDecisionP95Ms"] = (p95 * 1000).rounded()
+        }
+        if let p99 = axEventLatencies.percentile(0.99) {
+            payload["axEventToDecisionP99Ms"] = (p99 * 1000).rounded()
+        }
         printJSON(payload)
     }
 
@@ -404,55 +413,62 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         AccessibilityTextScanner.requestTrustIfNeeded()
 
         let processingOptions = options.processingOptions
-        axScanner = AccessibilityTextScanner(classifier: PIIClassifier(
+        let scanner = AccessibilityTextScanner(classifier: PIIClassifier(
             needles: processingOptions.needles,
             checkEmail: processingOptions.checkEmail,
             checkPhone: processingOptions.checkPhone
         ))
 
-        let interval = 1.0 / max(0.1, options.accessibilityFPS)
-        let timer = DispatchSource.makeTimerSource(queue: axQueue)
-        timer.schedule(deadline: .now() + interval, repeating: interval)
-        timer.setEventHandler { [weak self] in
-            self?.runAccessibilityScan()
-        }
-        timer.resume()
-        axTimer = timer
-    }
-
-    private func runAccessibilityScan() {
-        guard !axInFlight, let geometry = capture?.geometry, let axScanner else { return }
-        axInFlight = true
-        defer { axInFlight = false }
-        let scanStartedAt = ProcessInfo.processInfo.systemUptime
-
         var windowTarget: CGWindowID?
         if case .window(let id) = options.capture.target {
             windowTarget = id
         }
-
-        guard let boxes = axScanner.scan(geometry: geometry, windowTarget: windowTarget) else {
-            if !axWarnedNoTrust {
-                axWarnedNoTrust = true
-                fputs(
-                    "Accessibility detection inactive: grant Accessibility permission in "
-                        + "System Settings > Privacy & Security to enable it (OCR still runs).\n",
-                    stderr
-                )
-            }
-            return
+        let reconciliationInterval = max(1.0, 1.0 / max(0.1, options.accessibilityFPS))
+        let registry = AccessibilityProcessRegistry(
+            scanner: scanner,
+            geometryProvider: { [weak self] in self?.capture?.geometry },
+            windowTarget: windowTarget,
+            configuration: AXObserverSessionConfiguration(
+                reconciliationInterval: reconciliationInterval
+            )
+        ) { [weak self] update in
+            self?.acceptAccessibilityUpdate(update)
         }
-        let scannedAt = ProcessInfo.processInfo.systemUptime
+        axRegistry = registry
+        registry.start()
+    }
+
+    private func acceptAccessibilityUpdate(_ update: AXRegistryUpdate) {
+        if case .unavailable = update.coverage, !AccessibilityTextScanner.isTrusted, !axWarnedNoTrust {
+            axWarnedNoTrust = true
+            fputs(
+                "Accessibility detection inactive: grant Accessibility permission in "
+                    + "System Settings > Privacy & Security to enable it (OCR still runs).\n",
+                stderr
+            )
+        }
+        if let latency = update.eventToDecisionLatency {
+            axEventLatencies.record(latency)
+        }
         detectionQueue.async { [weak self] in
             guard let self else { return }
-            self.processor.updateAccessibilityBoxes(boxes, at: scannedAt)
+            self.processor.updateAccessibilityBoxes(update.boxes, at: update.observedAt)
             self.detectionCoordinator.ingest(DetectionBatch(
                 source: .accessibility,
-                observedAt: scannedAt,
-                effectiveFrom: scanStartedAt,
-                coverage: .verified,
-                findings: boxes
+                observedAt: update.observedAt,
+                effectiveFrom: update.effectiveFrom,
+                coverage: update.coverage,
+                findings: update.boxes
             ))
+            var event: [String: Any] = [
+                "trigger": update.trigger.rawValue,
+                "sessions": update.activeSessionCount,
+                "boxes": update.boxes.count,
+            ]
+            if let latency = update.eventToDecisionLatency {
+                event["eventToDecisionMs"] = (latency * 1000).rounded()
+            }
+            self.emitEvent("accessibilityBatch", event)
         }
     }
 
