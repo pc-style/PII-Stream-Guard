@@ -42,7 +42,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         let requiredSources: Set<PIIDetectionSource> = switch options.detectionMode {
         case .accessibilityOnly: [.accessibility]
         case .ocrOnly: [.ocr]
-        case .hybrid: [.ocr, .accessibility]
+        case .hybrid: [.ocr]
         }
         let decisionStore = DecisionTimelineStore(requiredSources: requiredSources)
         self.decisionStore = decisionStore
