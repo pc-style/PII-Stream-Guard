@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-enum DetectionMode: String, Codable, Sendable {
+public enum DetectionMode: String, Codable, Sendable, CaseIterable {
     case hybrid
     case accessibilityOnly = "accessibility"
     case ocrOnly = "ocr"

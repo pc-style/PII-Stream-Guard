@@ -123,6 +123,15 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var geometry: CaptureGeometry?
     private(set) var droppedFrameCount = 0
 
+    /// Opens the system Screen Recording permission prompt before
+    /// ScreenCaptureKit starts. The user still has to approve the app in
+    /// System Settings when access has not already been granted.
+    @discardableResult
+    static func requestScreenRecordingAccessIfNeeded() -> Bool {
+        guard !CGPreflightScreenCaptureAccess() else { return true }
+        return CGRequestScreenCaptureAccess()
+    }
+
     init(
         frameStore: FrameStore,
         options: CaptureOptions,

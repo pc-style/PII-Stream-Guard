@@ -39,7 +39,12 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     public init(options: WatchOptions) {
         self.options = options
-        let decisionStore = DecisionTimelineStore(requiredSources: [.ocr])
+        let requiredSources: Set<PIIDetectionSource> = switch options.detectionMode {
+        case .accessibilityOnly: [.accessibility]
+        case .ocrOnly: [.ocr]
+        case .hybrid: [.ocr]
+        }
+        let decisionStore = DecisionTimelineStore(requiredSources: requiredSources)
         self.decisionStore = decisionStore
         detectionCoordinator = DetectionCoordinator(timeline: decisionStore)
         let maximumFrameCount = max(
@@ -75,6 +80,19 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(headless ? .accessory : .regular)
         if !headless {
             NSApp.activate(ignoringOtherApps: true)
+        }
+
+        // Request both capture permissions before starting the capture task so
+        // first-run users see the system prompts together, rather than getting
+        // a late Screen Recording failure after Accessibility has started.
+        if options.accessibilityEnabled || options.detectionMode == .accessibilityOnly {
+            AccessibilityTextScanner.requestTrustIfNeeded()
+        }
+        if !CaptureEngine.requestScreenRecordingAccessIfNeeded() {
+            fputs(
+                "Screen Recording permission is required. Grant it in System Settings > Privacy & Security > Screen Recording.\n",
+                stderr
+            )
         }
 
         recorder.onEvent = { [weak self] event in
@@ -409,7 +427,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     // MARK: Accessibility detection
 
     private func startAccessibilityScanningIfEnabled() {
-        guard options.accessibilityEnabled, options.remote == nil else { return }
+        guard (options.accessibilityEnabled || options.detectionMode == .accessibilityOnly), options.remote == nil else { return }
         AccessibilityTextScanner.requestTrustIfNeeded()
 
         let processingOptions = options.processingOptions
@@ -475,7 +493,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     // MARK: OCR detection scheduling (unchanged cadence model)
 
     private func scheduleDetectionIfNeeded(sample: FrameSample) {
-        if options.remote != nil {
+        if options.remote != nil, options.detectionMode != .accessibilityOnly {
             scheduleRemoteDetectionIfNeeded(sample: sample)
             return
         }
