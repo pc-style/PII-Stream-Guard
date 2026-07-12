@@ -3,6 +3,7 @@ import CoreVideo
 import Foundation
 
 struct FrameProcessingOptions: Codable, Equatable {
+    var detectionMode: DetectionMode
     var needles: [String]
     var checkEmail: Bool
     var checkPhone: Bool
@@ -15,6 +16,7 @@ struct FrameProcessingOptions: Codable, Equatable {
         checkEmail: Bool = true,
         checkPhone: Bool = true,
         fps: Double? = nil,
+        detectionMode: DetectionMode = .hybrid,
         mode: GuardMode = .standard,
         settingsOverride: DetectorSettings? = nil
     ) {
@@ -22,6 +24,7 @@ struct FrameProcessingOptions: Codable, Equatable {
         self.checkEmail = checkEmail
         self.checkPhone = checkPhone
         self.fps = fps
+        self.detectionMode = detectionMode
         self.mode = mode
         self.settingsOverride = settingsOverride
     }
@@ -81,11 +84,15 @@ final class FrameProcessor {
 
     func process(sample: FrameSample) -> ProcessedFrame? {
         guard sample.id > newestAcceptedFrameID else { return nil }
-        let ocrBoxes = detector.detect(in: sample.pixelBuffer)
+        let ocrBoxes = options.detectionMode == .accessibilityOnly
+            ? []
+            : detector.detect(in: sample.pixelBuffer)
         guard sample.id > newestAcceptedFrameID else { return nil }
         newestAcceptedFrameID = sample.id
         let now = ProcessInfo.processInfo.systemUptime
-        lastOCRAt = now
+        if options.detectionMode != .accessibilityOnly {
+            lastOCRAt = now
+        }
 
         let detectedBoxes = Self.merge(
             ocr: ocrBoxes,

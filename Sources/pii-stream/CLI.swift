@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 
 public struct WatchOptions {
+    var detectionMode: DetectionMode = .hybrid
     var needles: [String] = []
     var checkEmail: Bool = true
     var checkPhone: Bool = true
@@ -28,6 +29,7 @@ public struct WatchOptions {
             checkEmail: checkEmail,
             checkPhone: checkPhone,
             fps: fps,
+            detectionMode: detectionMode,
             mode: mode,
             settingsOverride: settingsOverride
         )
@@ -95,6 +97,12 @@ public enum CLI {
         var i = 0
         while i < args.count {
             switch args[i] {
+            case "--detection-mode":
+                i += 1
+                guard i < args.count, let detectionMode = DetectionMode(rawValue: args[i].lowercased()) else {
+                    throw CLIError.invalidValue("--detection-mode")
+                }
+                options.detectionMode = detectionMode
             case "--needle":
                 i += 1
                 guard i < args.count else { throw CLIError.missingValue("--needle") }
@@ -486,6 +494,8 @@ public enum CLI {
       --no-email      Disable email regex detection
       --no-phone      Disable phone number detection
       --mode MODE     lockdown, standard, or low-latency (default: standard)
+      --detection-mode MODE
+                     hybrid, accessibility, or ocr (default: hybrid)
       --fps N         Override mode OCR detection rate
       --accurate      Use accurate Vision OCR (slower)
       --min-text-height N
