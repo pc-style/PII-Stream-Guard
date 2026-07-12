@@ -175,6 +175,7 @@ final class PreviewWindowController: NSWindowController {
     private let statusLabel = NSTextField(labelWithString: "")
     private var modeControl: NSSegmentedControl?
     private var guardMode: GuardMode
+    private let detectionMode: DetectionMode
     private var maskMode: MaskMode
     private var isRecording = false
     private var lastDisplayedFrameID: UInt64?
@@ -183,6 +184,7 @@ final class PreviewWindowController: NSWindowController {
     init(
         windowSize: CGSize,
         initialMode: GuardMode,
+        detectionMode: DetectionMode,
         initialMaskMode: MaskMode = .boundingBox,
         presentation: PreviewPresentation = .window,
         placement: WindowPlacement = .center,
@@ -192,6 +194,7 @@ final class PreviewWindowController: NSWindowController {
         onRecordToggle: @escaping (Bool) -> String? = { _ in nil }
     ) {
         self.guardMode = initialMode
+        self.detectionMode = detectionMode
         self.maskMode = initialMaskMode
         self.onModeChanged = onModeChanged
         self.onMaskChanged = onMaskChanged
@@ -344,7 +347,7 @@ final class PreviewWindowController: NSWindowController {
 
     private func updateStatus(boxCount: Int, armed: Bool) {
         guard !isRecording else { return }
-        statusLabel.stringValue = "\(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  armed \(armed ? "yes" : "no")  boxes \(boxCount)"
+        statusLabel.stringValue = "\(detectionMode.title)  \(guardMode.title)  delay \(String(format: "%.2fs", guardMode.renderDelay))  \(maskMode.rawValue)  armed \(armed ? "yes" : "no")  boxes \(boxCount)"
     }
 
 
