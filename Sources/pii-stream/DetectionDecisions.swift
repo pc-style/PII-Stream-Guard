@@ -7,6 +7,28 @@ public enum DetectionMode: String, Codable, Sendable, CaseIterable {
     case ocrOnly = "ocr"
 }
 
+extension DetectionMode {
+    var title: String {
+        switch self {
+        case .hybrid: "Hybrid"
+        case .accessibilityOnly: "Accessibility"
+        case .ocrOnly: "OCR"
+        }
+    }
+}
+
+extension CoverageState {
+    var eventValue: String {
+        switch self {
+        case .verified: "verified"
+        case .partial: "partial"
+        case .unknown: "unknown"
+        case .stale: "stale"
+        case .unavailable: "unavailable"
+        }
+    }
+}
+
 enum CoverageState: Equatable, Sendable {
     case verified
     case partial(reason: String)

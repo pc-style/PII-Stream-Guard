@@ -106,7 +106,7 @@ final class ProtectedFramePump {
                 frameSize: snapshot.frameSize,
                 capturedAt: snapshot.capturedAt,
                 guardMode: snapshot.guardMode,
-                armed: snapshot.armed,
+                armed: false,
                 blackoutWholeFrame: false,
                 freshness: snapshot.freshness
             )

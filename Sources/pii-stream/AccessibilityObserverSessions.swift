@@ -553,6 +553,7 @@ struct AXRegistryUpdate: Sendable {
     let effectiveFrom: TimeInterval
     let activeSessionCount: Int
     let trigger: AXSessionUpdate.Trigger
+    let visitedElements: Int
     let eventToDecisionLatency: TimeInterval?
 }
 
@@ -620,6 +621,7 @@ final class AccessibilityProcessRegistry: @unchecked Sendable {
                 effectiveFrom: now,
                 activeSessionCount: sessions.count,
                 trigger: .reconciliation,
+                visitedElements: 0,
                 eventToDecisionLatency: nil
             ))
             return
@@ -655,6 +657,7 @@ final class AccessibilityProcessRegistry: @unchecked Sendable {
                 effectiveFrom: now,
                 activeSessionCount: 0,
                 trigger: .reconciliation,
+                visitedElements: 0,
                 eventToDecisionLatency: nil
             ))
         }
@@ -680,6 +683,7 @@ final class AccessibilityProcessRegistry: @unchecked Sendable {
             effectiveFrom: update.effectiveFrom,
             activeSessionCount: sessions.count,
             trigger: update.trigger,
+            visitedElements: update.visitedElements,
             eventToDecisionLatency: update.timing.eventToDecisionLatency.map { _ in
                 max(0, observedAt - update.effectiveFrom)
             }

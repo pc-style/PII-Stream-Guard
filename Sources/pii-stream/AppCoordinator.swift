@@ -103,6 +103,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             preview = PreviewWindowController(
                 windowSize: CGSize(width: 1280, height: 800),
                 initialMode: options.mode,
+                detectionMode: options.detectionMode,
                 initialMaskMode: options.maskMode,
                 presentation: presentation,
                 placement: options.placement,
@@ -188,6 +189,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
                     self.emitEvent("started", [
                         "target": self.capture?.geometry?.targetDescription ?? "unknown",
                         "guardMode": self.guardMode.rawValue,
+                        "detectionMode": self.options.detectionMode.rawValue,
                         "preview": self.options.previewPresentation?.rawValue ?? "none",
                     ])
                     self.startAccessibilityScanningIfEnabled()
@@ -482,6 +484,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
                 "trigger": update.trigger.rawValue,
                 "sessions": update.activeSessionCount,
                 "boxes": update.boxes.count,
+                "coverage": update.coverage.eventValue,
+                "visitedElements": update.visitedElements,
             ]
             if let latency = update.eventToDecisionLatency {
                 event["eventToDecisionMs"] = (latency * 1000).rounded()

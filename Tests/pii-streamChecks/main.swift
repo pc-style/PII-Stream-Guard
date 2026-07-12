@@ -436,6 +436,7 @@ func checkProtectedDecisionApplication() {
         failClosedBlackout: true
     )
     check(!cleared.blackoutWholeFrame, "expected verified clear decision to release stale snapshot blackout")
+    check(!cleared.armed, "expected verified clear decision to disarm stale snapshot state")
 }
 
 checkClassifier()
