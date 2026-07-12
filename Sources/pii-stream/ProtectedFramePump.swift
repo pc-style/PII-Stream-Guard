@@ -99,6 +99,19 @@ final class ProtectedFramePump {
         to snapshot: DetectionSnapshot,
         failClosedBlackout: Bool
     ) -> DetectionSnapshot {
+        if case .clear? = decision?.action, snapshot.blackoutWholeFrame {
+            return DetectionSnapshot(
+                frameID: snapshot.frameID,
+                boxes: snapshot.boxes,
+                frameSize: snapshot.frameSize,
+                capturedAt: snapshot.capturedAt,
+                guardMode: snapshot.guardMode,
+                armed: snapshot.armed,
+                blackoutWholeFrame: false,
+                freshness: snapshot.freshness
+            )
+        }
+
         let timelineRequiresBlackout: Bool
         switch decision?.action {
         case .blackout:
