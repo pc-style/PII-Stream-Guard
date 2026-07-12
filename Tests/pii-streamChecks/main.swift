@@ -412,6 +412,30 @@ func checkProtectedDecisionApplication() {
         failClosedBlackout: false
     )
     check(!overlay.blackoutWholeFrame, "expected local overlay path to remain non-blocking")
+
+    let staleBlackoutSnapshot = DetectionSnapshot(
+        frameID: 2,
+        boxes: [],
+        frameSize: CGSize(width: 100, height: 100),
+        capturedAt: 2,
+        guardMode: .standard,
+        armed: true,
+        blackoutWholeFrame: true
+    )
+    let clearDecision = ProtectionDecision(
+        effectiveFrom: 2,
+        effectiveUntil: nil,
+        action: .clear,
+        sources: [.accessibility],
+        coverage: .verified,
+        createdAt: 2
+    )
+    let cleared = ProtectedFramePump.applying(
+        clearDecision,
+        to: staleBlackoutSnapshot,
+        failClosedBlackout: true
+    )
+    check(!cleared.blackoutWholeFrame, "expected verified clear decision to release stale snapshot blackout")
 }
 
 checkClassifier()

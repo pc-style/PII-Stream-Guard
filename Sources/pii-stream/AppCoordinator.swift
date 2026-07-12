@@ -572,13 +572,15 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
     private func detect(sample: FrameSample) {
         guard let processed = processor.process(sample: sample) else { return }
-        detectionCoordinator.ingest(DetectionBatch(
-            source: .ocr,
-            observedAt: processed.processedAt,
-            effectiveFrom: sample.capturedAt,
-            coverage: .verified,
-            findings: processed.detectedBoxes.filter { $0.source == .ocr }
-        ))
+        if options.processingOptions.detectionMode != .accessibilityOnly {
+            detectionCoordinator.ingest(DetectionBatch(
+                source: .ocr,
+                observedAt: processed.processedAt,
+                effectiveFrom: sample.capturedAt,
+                coverage: .verified,
+                findings: processed.detectedBoxes.filter { $0.source == .ocr }
+            ))
+        }
         latestFreshness = processed.snapshot.freshness
         boxStore.update(processed.snapshot)
         logDetections(processed.detectedBoxes, snapshot: processed.snapshot)
