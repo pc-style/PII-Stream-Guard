@@ -99,7 +99,7 @@ final class ProtectedFramePump {
         to snapshot: DetectionSnapshot,
         failClosedBlackout: Bool
     ) -> DetectionSnapshot {
-        if case .clear? = decision?.action, snapshot.blackoutWholeFrame {
+        if case .clear? = decision?.action {
             return DetectionSnapshot(
                 frameID: snapshot.frameID,
                 boxes: snapshot.boxes,

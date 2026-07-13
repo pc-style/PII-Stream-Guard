@@ -437,6 +437,22 @@ func checkProtectedDecisionApplication() {
     )
     check(!cleared.blackoutWholeFrame, "expected verified clear decision to release stale snapshot blackout")
     check(!cleared.armed, "expected verified clear decision to disarm stale snapshot state")
+
+    let staleArmedSnapshot = DetectionSnapshot(
+        frameID: 3,
+        boxes: [],
+        frameSize: CGSize(width: 100, height: 100),
+        capturedAt: 3,
+        guardMode: .standard,
+        armed: true,
+        blackoutWholeFrame: false
+    )
+    let disarmed = ProtectedFramePump.applying(
+        clearDecision,
+        to: staleArmedSnapshot,
+        failClosedBlackout: true
+    )
+    check(!disarmed.armed, "expected clear decision to override an armed snapshot without blackout")
 }
 
 checkClassifier()
