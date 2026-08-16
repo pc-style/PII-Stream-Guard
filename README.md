@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> **Archival prepared 2026-08-16; repository-settings authorization is still required to make this repository read-only.** This experimental predecessor is superseded by [pc-style/stream-guard](https://github.com/pc-style/stream-guard). No predecessor material was migrated: the repository has no declared license, captured-frame provenance is insufficient, and the raw-frame remote/`0.0.0.0` mode was intentionally excluded. Full Git history and all six branches are preserved.
+> **Archive pending — scheduled for archive once repository administration permission is available (prepared 2026-08-16).** This experimental predecessor is superseded by [pc-style/stream-guard](https://github.com/pc-style/stream-guard). No predecessor material was migrated: the repository has no declared license, captured-frame provenance is insufficient, and the raw-frame remote/`0.0.0.0` mode was intentionally excluded. Do not use this repository for new work. Full Git history and all six branches are preserved.
 
 # PII Stream Guard
 
