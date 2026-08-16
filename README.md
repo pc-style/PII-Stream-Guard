@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **Archival prepared 2026-08-16; repository-settings authorization is still required to make this repository read-only.** This experimental predecessor is superseded by [pc-style/stream-guard](https://github.com/pc-style/stream-guard). No predecessor material was migrated: the repository has no declared license, captured-frame provenance is insufficient, and the raw-frame remote/`0.0.0.0` mode was intentionally excluded. Full Git history and all six branches are preserved.
+
 # PII Stream Guard
 
 PII Stream Guard is a macOS tool for streaming or sharing your screen without leaking PII. It captures any display or window with ScreenCaptureKit, detects emails, phone numbers, and custom text with Apple Vision OCR plus the macOS Accessibility tree, and renders a slightly delayed protected output where detected areas are boxed or blacked out before they can leak.
